@@ -1,0 +1,33 @@
+# Compiled binaries
+vex
+vex-*
+
+# Logs
+*.log
+
+# Dependencies
+node_modules/
+
+# TypeScript
+*.tsbuildinfo
+
+# Build output
+dist
+
+# Bun
+bun.lockb
+bun.lock
+
+# dotenv
+.env
+.env.local
+.env.*.local
+
+# Data
+.vex/
+*.db
+*.db-wal
+*.db-shm
+examples/mercury/.mercury-data/
+examples/mercury/.vex-platform/
+examples/mercury/mercury-data/

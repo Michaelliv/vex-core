@@ -1,0 +1,63 @@
+{
+  "name": "vex-core",
+  "version": "0.1.0",
+  "description": "Local-first reactive database engine. Convex DX, SQLite storage, plugin architecture.",
+  "type": "module",
+  "main": "dist/index.js",
+  "types": "dist/index.d.ts",
+  "exports": {
+    ".": {
+      "bun": "./src/index.ts",
+      "default": "./dist/index.js"
+    },
+    "./client": {
+      "bun": "./src/client/index.ts",
+      "default": "./dist/client/index.js"
+    },
+    "./server": {
+      "bun": "./src/server/index.ts",
+      "default": "./dist/server/index.js"
+    },
+    "./framework": {
+      "bun": "./src/framework/index.ts",
+      "default": "./dist/framework/index.js"
+    },
+    "./adapters/sqlite": {
+      "bun": "./src/adapters/sqlite.ts",
+      "default": "./dist/adapters/sqlite.js"
+    },
+    "./adapters/duckdb": {
+      "bun": "./src/adapters/duckdb.ts",
+      "default": "./dist/adapters/duckdb.js"
+    }
+  },
+  "files": ["dist"],
+  "scripts": {
+    "build": "tsc",
+    "test": "bun test",
+    "format": "bunx biome format --write src/",
+    "lint": "bunx biome lint src/",
+    "check": "bunx biome check src/",
+    "typecheck": "tsc --noEmit"
+  },
+  "keywords": ["database", "reactive", "sqlite", "local-first", "convex", "plugin"],
+  "license": "MIT",
+  "devDependencies": {
+    "@biomejs/biome": "^2.3.14",
+    "@types/bun": "^1.2.17",
+    "@types/react": "^19.2.14",
+    "typescript": "^5.8.0"
+  },
+  "dependencies": {
+    "duckdb-async": "^1.4.2",
+    "nanoid": "^5.1.7"
+  },
+  "peerDependencies": {
+    "react": "^19.2.4"
+  },
+  "peerDependenciesMeta": {
+    "react": {
+      "optional": true
+    }
+  }
+}
