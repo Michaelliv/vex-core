@@ -1,73 +1,63 @@
-# vex
+# vex-core
 
-Local-first reactive backend. SQLite for transactions, DuckDB for analytics. Plugin architecture. Platform server with dashboard and distributed tracing.
+Local-first reactive backend engine. Plugin architecture, SQLite for transactions, DuckDB for analytics, real-time subscriptions via SSE.
 
 ```
-npm install @miclivs/vex
+npm install vex-core
 ```
+
+Peer: `react` ^19 (only if you use `vex-core/client`).
 
 ## Quick start
 
 ```ts
-import { Vex } from "@miclivs/vex";
-import { sqliteAdapter } from "@miclivs/vex/adapters/sqlite";
-import kv from "@miclivs/vex/plugins/kv";
+import { Vex, sqliteAdapter } from "vex-core";
 
 const vex = await Vex.create({
   transactional: sqliteAdapter(".vex/data.db"),
   analytical: sqliteAdapter(".vex/analytics.db"),
-  plugins: [kv],
+  plugins: [
+    (api) => {
+      api.setName("counter");
+      api.registerTable("counters", {
+        columns: { key: { type: "string" }, value: { type: "number" } },
+      });
+      api.registerMutation("set", {
+        args: { key: "string", value: "number" },
+        async handler(ctx, args) {
+          return ctx.db.table("counters").insert(args);
+        },
+      });
+      api.registerQuery("list", {
+        args: {},
+        async handler(ctx) {
+          return ctx.db.table("counters").all();
+        },
+      });
+    },
+  ],
 });
 
-await vex.mutate("kv.set", { scope: "app", key: "count", value: 42 });
-await vex.query("kv.get", { scope: "app", key: "count" }); // 42
+await vex.mutate("counter.set", { key: "hits", value: 1 });
+await vex.query("counter.list");
 
-const unsub = await vex.subscribe("kv.get", { scope: "app", key: "count" }, (value) => {
-  console.log("changed:", value);
+const unsub = await vex.subscribe("counter.list", {}, (rows) => {
+  console.log("changed:", rows);
 });
-```
-
-## Write a plugin
-
-```ts
-function todos(api) {
-  api.setName("todo");
-
-  api.registerTable("todos", {
-    columns: { text: { type: "string" }, done: { type: "boolean" } },
-  });
-
-  api.registerQuery("list", {
-    args: {},
-    async handler(ctx) {
-      return ctx.db.table("todos").order("_id", "desc").all();
-    },
-  });
-
-  api.registerMutation("add", {
-    args: { text: "string" },
-    async handler(ctx, args) {
-      return ctx.db.table("todos").insert({ text: args.text, done: false });
-    },
-  });
-}
 ```
 
 ## Query builder
 
-Reads, filters, aggregations — all pushed to SQL.
+Reads, filters, aggregations — pushed down to SQL.
 
 ```ts
-// Filters
-ctx.db.table("orders").where("region", "=", "US").all()
-ctx.db.table("orders").where("amount", ">", 100).select("id", "amount").first()
+ctx.db.table("orders").where("region", "=", "US").all();
+ctx.db.table("orders").where("amount", ">", 100).select("id", "amount").first();
 
-// Aggregates
-ctx.db.table("orders").count()
-ctx.db.table("orders").sum("amount")
-ctx.db.table("orders").avg("amount")
+ctx.db.table("orders").count();
+ctx.db.table("orders").sum("amount");
+ctx.db.table("orders").avg("amount");
 
-// Group by
 ctx.db.table("orders")
   .groupBy(["region", "product"], {
     revenue: ["sum", "amount"],
@@ -75,12 +65,12 @@ ctx.db.table("orders")
   })
   .having("count", ">=", 10)
   .order("revenue", "desc")
-  .limit(20)
+  .limit(20);
 ```
 
 ## Analytical tables
 
-Tables with `storage: "analytical"` route to the analytical adapter.
+Tables with `storage: "analytical"` route to the analytical adapter (SQLite or DuckDB).
 
 ```ts
 api.registerTable("events", {
@@ -93,189 +83,99 @@ api.registerTable("events", {
 });
 ```
 
+Use `duckdbAdapter` from `vex-core/adapters/duckdb` when you want columnar scans.
+
 ## File-based conventions
 
-Flat files, no config. For agents and rapid prototyping.
+Flat files, no config. Use `scanDirectory` to turn a folder into plugins.
 
 ```ts
 // schema.ts
-import { table } from "@miclivs/vex/framework";
+import { table } from "vex-core/framework";
 export const todos = table({ text: "string", done: "boolean" });
 
 // todos.ts
-import { query, mutation } from "@miclivs/vex/framework";
+import { query, mutation } from "vex-core/framework";
 export const list = query({}, async (ctx) => ctx.db.table("todos").all());
 export const add = mutation({ text: "string" }, async (ctx, args) =>
-  ctx.db.table("todos").insert({ text: args.text, done: false }));
+  ctx.db.table("todos").insert({ text: args.text, done: false }),
+);
 ```
 
-## Platform server
+```ts
+import { scanDirectory } from "vex-core/framework";
+import { Vex, sqliteAdapter } from "vex-core";
 
-Host multiple full-stack apps. Dashboard with reactive tables, traces, and analytics.
-
-```bash
-VEX_KEY=my-secret vex serve    # start platform on :3456
-vex deploy                     # push current directory as an app
+const { plugins } = await scanDirectory("./app");
+const vex = await Vex.create({
+  transactional: sqliteAdapter(".vex/data.db"),
+  analytical: sqliteAdapter(".vex/analytics.db"),
+  plugins,
+});
 ```
 
-Configure via `.env` file or env vars (see `.env.example`):
+Also supported in files: `webhook(path, handler)`, `job(schedule, handler)`, `middleware(fn)`.
 
-```
-VEX_KEY=my-secret
-VEX_SPAN_RETENTION=7d
-VEX_HANDLER_TIMEOUT=30s
-VEX_TRACE_SAMPLE_RATE=1.0
-VEX_CORS_ORIGIN=*
-```
+## HTTP handler
 
-### Dashboard
+Mount a minimal HTTP handler for queries, mutations, webhooks, and SSE subscriptions.
 
-The platform serves a reactive dashboard at `/`. Fully SSE-powered — no polling.
+```ts
+import { createHandler } from "vex-core/server";
 
-- **App list** — reactive via subscription to `platform.apps`
-- **Overview** — tables with schemas, queries/mutations with args, platform stats
-- **Tables** — live row browser with pagination (subscribes to `_system.rows`)
-- **Query runner** — execute queries/mutations with args, history panel
-- **Logs** — HTTP traces streaming in real-time
+const { handle } = createHandler("/vex", vex, { corsOrigin: "*" });
 
-### HTTP API
-
-```
-POST   /api/apps              Create app
-GET    /api/apps              List apps
-POST   /a/:id/files/bulk      Push files
-POST   /a/:id/boot            Start backend
-POST   /a/:id/query           { name, args }
-POST   /a/:id/mutate          { name, args }
-GET    /a/:id/subscribe       SSE
-POST   /a/:id/sql             { sql, storage? }
-GET    /a/:id/info            Full introspection
-GET    /a/:id/tables/:table   Paginated rows
-DELETE /a/:id                 Delete app
+Bun.serve({
+  port: 3000,
+  fetch: (req) => handle(req),
+});
 ```
 
-## Auth
-
-`VEX_KEY` is required to start the platform. Supports root key and scoped keys with granular permissions.
-
-```bash
-vex login http://localhost:3456    # authenticate CLI
-vex keys create --name agent --permissions 'query:*:*,mutate:*:*'
-vex keys list
-```
-
-Scoped key permissions: `query:app:operation`, `mutate:app:operation`, `deploy:app`, `*` for everything. Rate limiting and body size limits per key.
-
-## CLI
-
-```bash
-vex serve [dir]              # Start platform server
-vex deploy                   # Deploy current directory
-vex apps                     # List apps
-vex info <app>               # App introspection
-vex query <app> <name>       # Run a query
-vex mutate <app> <name>      # Run a mutation
-vex rows <app> <table>       # Browse table rows
-vex sql <app> <query>        # Raw SQL (-a for analytical)
-vex trace <traceId>          # Compact tree
-vex trace <traceId> -d       # + tables, tokens, cost, errors
-vex trace <traceId> -e       # + full args and content
-vex login <url>              # Save credentials
-vex logout <url>             # Remove credentials
-vex keys list/create/delete  # Manage scoped keys
-```
-
-All commands support `--to <url>` for remote servers and `--json` for machine output.
-
-### Trace drill-down
-
-```bash
-# Compact tree
-$ vex trace abc123de
-OK  http         POST /a/demo-todo/mutate 9.0ms 200 todos.add
-└─ OK  mutation     todos.add 3.2ms plugin:todos
-   ├─ OK  handler      todos.add 343μs
-   └─ OK  invalidation subscriptions 2.1ms subs:1 re-ran:[todos.list]
-
-# Full detail — args, stack traces, invalidated subscriptions
-$ vex trace abc123de --detail
-OK  http         POST /a/demo-todo/mutate 9.0ms 200 todos.add
-   args: {"text": "hello world"}
-└─ OK  mutation     todos.add 3.2ms plugin:todos
-      args: {"text": "hello world"}
-   ├─ OK  handler      todos.add 343μs
-   └─ OK  invalidation subscriptions 2.1ms
-         changed: todos
-         re-evaluated: todos.list
-
-# Raw SQL over traces
-$ vex sql _platform "SELECT type, avg(duration) FROM spans GROUP BY type" -a
-```
-
-## Observability
-
-Built-in distributed tracing. Every engine operation is a span. HTTP requests are the root span.
+Routes:
 
 ```
-http POST /a/demo-todo/mutate (7ms)
-  └─ mutation todos.add (3ms)
-       ├─ middleware todos.add (if registered)
-       │   └─ handler todos.add
-       └─ invalidation subscriptions
-```
-
-Spans store: full args, tables touched, plugin name, result row counts, error stack traces, invalidated subscription names.
-
-The platform stores all spans in `_platform`'s `spans` table (analytical). Query with SQL:
-
-```bash
-vex sql _platform "SELECT * FROM spans WHERE status='error'" -a
-vex sql _platform "SELECT app, type, count(*), avg(duration) FROM spans GROUP BY app, type" -a
+POST /vex/query            { name, args }
+POST /vex/mutate           { name, args }
+GET  /vex/subscribe        ?name=...&args=... (SSE)
+*    /vex/webhook/:path    user-defined webhooks
 ```
 
 ## React client
 
 ```tsx
-import { useQuery, useMutation } from "@miclivs/vex/client";
+import { VexProvider, useQuery, useMutation } from "vex-core/client";
 
-const { data: todos } = useQuery("todos.list");
-const { mutate: addTodo } = useMutation("todos.add");
+function App() {
+  return (
+    <VexProvider basePath="/vex">
+      <Todos />
+    </VexProvider>
+  );
+}
+
+function Todos() {
+  const { data: todos, isLoading } = useQuery("todos.list");
+  const { mutate: addTodo } = useMutation("todos.add");
+  // ...
+}
 ```
 
-SSE subscriptions — data updates automatically on mutations.
+SSE-backed — data updates automatically on mutations that touch the underlying tables.
 
-## Built-in plugins
+## Observability
 
-| Plugin | Purpose |
-|--------|---------|
-| `kv` | Key-value store (scoped) |
-| `files` | File storage (scoped) |
-| `sessions` | Session management |
-| `auth` | Users + auth sessions |
-| `logs` | Events, metrics (analytical) |
+Every engine operation is a span. Pass a `tracer` to `Vex.create` to capture queries, mutations, handler timings, tables touched, invalidated subscriptions, and errors. See `src/core/tracer.ts` for the `Tracer` and `Span` interfaces.
 
-## Performance
+## Exports
 
-Apple M1 Pro, single process, `bun:sqlite`:
-
-| Operation | Throughput |
-|-----------|-----------|
-| Point lookup | ~130K ops/s |
-| Single insert | ~55K ops/s |
-| Bulk insert 1M rows | ~535K rows/s |
-| Write + 60 subs invalidation | ~2.4K ops/s |
-| AVG on 100K rows | ~265 ops/s |
-
-## Examples
-
-| Example | What it shows |
-|---------|---------------|
-| `examples/arena/` | Multiplayer game — canvas, SSE, 3 files |
-| `examples/chat-app/` | Multi-room chat, framework conventions |
-| `examples/todo.ts` | Single-file programmatic API |
-| `examples/analytics-dashboard.ts` | Dual storage, multiple plugins |
-| `examples/etl-pipeline.ts` | Bulk loads + analytical queries |
-| `examples/pi-runtime/` | Pi coding agent running on Vex |
+| Entry | Contents |
+|-------|----------|
+| `vex-core` | `Vex`, `sqliteAdapter`, `duckdbAdapter`, `id`, core types, tracer, auth helpers |
+| `vex-core/framework` | `table`, `query`, `mutation`, `webhook`, `job`, `middleware`, `scanDirectory` |
+| `vex-core/server` | `createHandler` |
+| `vex-core/client` | `VexProvider`, `useQuery`, `useMutation` |
+| `vex-core/adapters/sqlite` | `sqliteAdapter` |
+| `vex-core/adapters/duckdb` | `duckdbAdapter` |
 
 ## License
 
