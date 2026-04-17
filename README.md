@@ -6,6 +6,10 @@ Local-first reactive backend engine. Plugin architecture, SQLite for transaction
 npm install vex-core
 ```
 
+**Runtime requirements**
+
+- Bun 1.2+ *or* Node 24+ — `vex-core/http` uses the Web platform's `URLPattern` global for route matching. Older runtimes need a polyfill (`urlpattern-polyfill` works).
+
 Peer: `react` ^19 (only if you use `vex-core/client`).
 
 ## Quick start
