@@ -10,6 +10,7 @@
  * shipping.
  */
 
+import { isHttpError } from "../error.js";
 import type { Middleware, RequestCtx } from "../types.js";
 
 export interface AccessLogOptions {
@@ -45,15 +46,19 @@ export function accessLog(options: AccessLogOptions = {}): Middleware {
       response = await next();
     } catch (err) {
       const dur = Math.round(performance.now() - start);
+      // An HttpError is an intentional status — log it as such, not
+      // as a 500. Anything else is an unexpected throw.
+      const status = isHttpError(err) ? err.status : 500;
+      const suffix = isHttpError(err) ? null : "error";
       const meta: AccessLogMeta = {
         method: ctx.req.method,
         path: ctx.url.pathname,
-        status: 500,
+        status,
         durationMs: dur,
         requestId: (ctx.state.requestId as string | undefined) ?? null,
         userId: ctx.user?.id ?? null,
       };
-      logger(format(meta, "error"), ctx, meta);
+      logger(format(meta, suffix), ctx, meta);
       throw err;
     }
 

@@ -79,12 +79,22 @@ export function staticFiles(options: StaticFilesOptions): Middleware {
   }
 
   return async (ctx, next) => {
-    // Let explicit routes win first — if the downstream chain returned
-    // something other than a 404, that's the canonical response. Only
-    // on 404 do we look for a file. This lets staticFiles sit at the
-    // top of the stack for ergonomic config while still honoring
-    // specific routes registered below it.
-    const downstream = await next();
+    // Let explicit routes win first. The downstream chain may:
+    //   - return a non-404 Response — canonical, pass through;
+    //   - return a 404 Response — we try to serve a file;
+    //   - throw HttpError.notFound() — treat the same as a 404;
+    //   - throw anything else — rethrow, it's a real error.
+    let downstream: Response;
+    try {
+      downstream = await next();
+    } catch (err) {
+      const isNotFound =
+        typeof err === "object" &&
+        err !== null &&
+        (err as { status?: unknown }).status === 404;
+      if (!isNotFound) throw err;
+      downstream = new Response("Not Found", { status: 404 });
+    }
     if (downstream.status !== 404) return downstream;
     if (ctx.req.method !== "GET" && ctx.req.method !== "HEAD")
       return downstream;
