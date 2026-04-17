@@ -18,8 +18,13 @@
  *
  * Composition
  *   - `router.mount(prefix, inner)` strips `prefix` from the pathname
- *     before dispatching to `inner`. Prefixes must NOT end in `/`.
+ *     before dispatching to `inner`. Empty prefix (`""`, `"/"`) mounts
+ *     at root — every request flows through the inner handler.
  *   - `router.use(mw)` adds middleware that runs before every matcher.
+ *   - Dispatch is **registration-ordered**: routes and mounts are
+ *     tried in the order they were added. A child mount that returns
+ *     404 lets later routes try to match; this is how you can mix
+ *     "engine at root" with a `/health` route above it.
  *   - Nested routers inherit nothing except their path scope; parent
  *     middleware runs before the child's dispatch.
  */
@@ -43,16 +48,18 @@ type Method =
   | "HEAD"
   | "ALL";
 
-interface Route {
-  method: Method;
-  pattern: URLPattern;
-  handlers: Handler[];
-}
-
-interface Mount {
-  prefix: string;
-  inner: (req: Request, parent?: Partial<RequestCtx>) => Promise<Response>;
-}
+type Matcher =
+  | {
+      kind: "route";
+      method: Method;
+      pattern: URLPattern;
+      handlers: Handler[];
+    }
+  | {
+      kind: "mount";
+      prefix: string;
+      inner: (req: Request, parent?: Partial<RequestCtx>) => Promise<Response>;
+    };
 
 interface RegisteredErrorHandler {
   predicate: (err: unknown, ctx: RequestCtx) => boolean;
@@ -91,8 +98,7 @@ function buildCtx(
 export class Router {
   private readonly prefix: string;
   private readonly middlewares: Middleware[] = [];
-  private readonly routes: Route[] = [];
-  private readonly mounts: Mount[] = [];
+  private readonly matchers: Matcher[] = [];
   private readonly errorHandlers: RegisteredErrorHandler[] = [];
 
   constructor(opts: RouterOptions = {}) {
@@ -142,12 +148,14 @@ export class Router {
     inner: Router | ((req: Request) => Response | Promise<Response>),
   ): this {
     const p = normalizePrefix(prefix);
-    if (!p) throw new Error("mount() requires a non-empty prefix");
     const innerFn =
       inner instanceof Router
         ? inner.dispatch.bind(inner)
         : async (req: Request) => inner(req);
-    this.mounts.push({ prefix: p, inner: innerFn });
+    // Empty prefix (`""`, `"/"`) means "mount at root" — every request
+    // flows through the inner handler. Still honors registration
+    // order: if the inner returns 404, later routes get a chance.
+    this.matchers.push({ kind: "mount", prefix: p, inner: innerFn });
     return this;
   }
 
@@ -224,7 +232,7 @@ export class Router {
     // URLPattern lets us use `:param`, `*`, and regex groups. We pin
     // pathname matching; method and host are not part of the pattern.
     const pattern = new URLPattern({ pathname: full });
-    this.routes.push({ method, pattern, handlers });
+    this.matchers.push({ kind: "route", method, pattern, handlers });
     return this;
   }
 
@@ -235,33 +243,39 @@ export class Router {
     const { pathname } = ctx.url;
     const method = req.method.toUpperCase() as Method;
 
-    // Mounts win over routes when both could match — a mounted
-    // subrouter is the expression of "everything under /api", and
-    // a parent route at the same prefix would be surprising.
-    for (const mount of this.mounts) {
-      if (pathname === mount.prefix || pathname.startsWith(mount.prefix + "/")) {
-        const rewritten = rewriteRequestPath(req, ctx.url, mount.prefix);
-        const response = await mount.inner(rewritten, ctx);
-        // Don't swallow a 404 from the inner router — let it stand,
-        // callers can install a catch-all at the parent if they want
-        // a different fallback.
+    // Walk matchers in registration order. A 404 from a mount (or
+    // from a route chain that returned undefined) falls through to
+    // the next matcher, so you can stack `app.get("/health", …)`
+    // above an `app.mount("", inner)` and both work.
+    for (const m of this.matchers) {
+      if (m.kind === "mount") {
+        const matches =
+          m.prefix === "" ||
+          pathname === m.prefix ||
+          pathname.startsWith(m.prefix + "/");
+        if (!matches) continue;
+        const rewritten =
+          m.prefix === "" ? req : rewriteRequestPath(req, ctx.url, m.prefix);
+        const response = await m.inner(rewritten, ctx);
+        if (response.status === 404) continue; // fall through
         return response;
       }
-    }
 
-    for (const route of this.routes) {
-      if (route.method !== "ALL" && route.method !== method) continue;
-      const match = route.pattern.exec({ pathname });
-      if (!match) continue;
-      const params = extractParams(match);
-      const routeCtx: RequestCtx = { ...ctx, params: { ...ctx.params, ...params } };
-      for (const handler of route.handlers) {
+      if (m.method !== "ALL" && m.method !== method) continue;
+      const execResult = m.pattern.exec({ pathname });
+      if (!execResult) continue;
+      const params = extractParams(execResult);
+      const routeCtx: RequestCtx = {
+        ...ctx,
+        params: { ...ctx.params, ...params },
+      };
+      for (const handler of m.handlers) {
         const result = await handler(routeCtx);
         if (result instanceof Response) return result;
         // undefined → fall through to next handler in this route
       }
       // Every handler returned undefined. Fall through to the next
-      // matching route instead of 404ing immediately.
+      // matching matcher instead of 404ing immediately.
     }
 
     return undefined;

@@ -127,8 +127,38 @@ describe("router — mount", () => {
     expect(res.status).toBe(404);
   });
 
-  test("mount requires a non-empty prefix", () => {
-    expect(() => createRouter().mount("/", createRouter())).toThrow();
+  test("root mount (empty prefix) routes every request through inner", async () => {
+    const inner = createRouter().get("/hello", () => new Response("hi"));
+    const app = createRouter().mount("", inner);
+    const res = await app.handle(new Request("http://x/hello"));
+    expect(res.status).toBe(200);
+    expect(await res.text()).toBe("hi");
+  });
+
+  test('root mount via "/" normalizes to empty prefix', async () => {
+    const inner = createRouter().get("/hello", () => new Response("hi"));
+    const app = createRouter().mount("/", inner);
+    const res = await app.handle(new Request("http://x/hello"));
+    expect(res.status).toBe(200);
+  });
+
+  test("parent routes registered before a root-mount still win", async () => {
+    const inner = createRouter().get("/health", () => new Response("INNER"));
+    const app = createRouter()
+      .get("/health", () => new Response("PARENT"))
+      .mount("", inner);
+    const res = await app.handle(new Request("http://x/health"));
+    expect(await res.text()).toBe("PARENT");
+  });
+
+  test("404 from a mount falls through to later matchers", async () => {
+    const inner = createRouter().get("/known", () => new Response("yes"));
+    const app = createRouter()
+      .mount("", inner)
+      .get("/fallback", () => new Response("fell through"));
+    const res = await app.handle(new Request("http://x/fallback"));
+    expect(res.status).toBe(200);
+    expect(await res.text()).toBe("fell through");
   });
 });
 
