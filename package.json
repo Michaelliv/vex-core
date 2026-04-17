@@ -1,43 +1,37 @@
 {
   "name": "vex-core",
-  "version": "0.1.1",
+  "version": "0.2.0",
   "description": "Local-first reactive backend engine. Plugin architecture, SQLite + DuckDB storage, real-time subscriptions.",
   "type": "module",
   "main": "./dist/index.js",
   "types": "./dist/index.d.ts",
   "exports": {
     ".": {
-      "bun": "./src/index.ts",
       "types": "./dist/index.d.ts",
       "import": "./dist/index.js",
       "default": "./dist/index.js"
     },
     "./client": {
-      "bun": "./src/client/index.ts",
       "types": "./dist/client/index.d.ts",
       "import": "./dist/client/index.js",
       "default": "./dist/client/index.js"
     },
     "./server": {
-      "bun": "./src/server/index.ts",
       "types": "./dist/server/index.d.ts",
       "import": "./dist/server/index.js",
       "default": "./dist/server/index.js"
     },
     "./framework": {
-      "bun": "./src/framework/index.ts",
       "types": "./dist/framework/index.d.ts",
       "import": "./dist/framework/index.js",
       "default": "./dist/framework/index.js"
     },
     "./adapters/sqlite": {
-      "bun": "./src/adapters/sqlite.ts",
       "types": "./dist/adapters/sqlite.d.ts",
       "import": "./dist/adapters/sqlite.js",
       "default": "./dist/adapters/sqlite.js"
     },
     "./adapters/duckdb": {
-      "bun": "./src/adapters/duckdb.ts",
       "types": "./dist/adapters/duckdb.d.ts",
       "import": "./dist/adapters/duckdb.js",
       "default": "./dist/adapters/duckdb.js"
@@ -90,7 +84,7 @@
     "typescript": "^5.8.0"
   },
   "dependencies": {
-    "duckdb-async": "^1.4.2",
+    "@duckdb/node-api": "^1.5.2-r.1",
     "nanoid": "^5.1.7"
   },
   "peerDependencies": {

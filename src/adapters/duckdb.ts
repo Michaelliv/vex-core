@@ -1,4 +1,35 @@
-import { Database } from "duckdb-async";
+/**
+ * DuckDB storage adapter, built on `@duckdb/node-api`.
+ *
+ * We left the legacy `duckdb-async` package behind for three reasons:
+ *   1. `duckdb-async` pulls in the classic `duckdb` binding, whose
+ *      postinstall fetches a native `.node` via node-pre-gyp. Bun's
+ *      `bun install -g` doesn't run install scripts by default — the
+ *      binary never lands and the import throws at runtime. The new
+ *      `@duckdb/node-api` ships prebuilds through standard bundling,
+ *      no postinstall dance.
+ *   2. `duckdb-async` has a history of segfaulting on Bun atexit.
+ *   3. `@duckdb/node-api` is the officially maintained binding.
+ *
+ * Surface changes worth knowing
+ *   - The new binding returns native `bigint` for BIGINT columns; the
+ *     legacy binding coerced small values to `number`. Callers that do
+ *     arithmetic on the result of COUNT/SUM over big integer columns
+ *     may need a Number(...) cast. `deserializeRow` in shared.ts
+ *     preserves whatever the driver returns.
+ *   - `db.run()` no longer surfaces an `affectedRows` count. We use
+ *     a DELETE ... RETURNING roundtrip for the query-builder `delete`
+ *     path to keep the `{ changes }` contract in `DbExec`.
+ *   - Multi-statement DDL (`INSTALL sqlite; LOAD sqlite;`) is split on
+ *     top-level `;` before dispatch, matching the convention dripline
+ *     established in its own wrapper.
+ */
+
+import {
+  type DuckDBConnection,
+  DuckDBInstance,
+  type DuckDBValue,
+} from "@duckdb/node-api";
 import { id as generateId } from "../core/id.js";
 import type { StorageAdapter } from "../core/storage.js";
 import type { TableSchema } from "../core/types.js";
@@ -11,25 +42,92 @@ import {
   toSqlType,
 } from "./shared.js";
 
-function wrapAsync(db: Database): DbExec {
+/**
+ * Split a SQL string on top-level `;` boundaries. Ignores `;`
+ * appearing inside single-quoted string literals. Good enough for the
+ * DDL strings this adapter actually emits.
+ */
+function splitStatements(sql: string): string[] {
+  const out: string[] = [];
+  let buf = "";
+  let inSingle = false;
+  for (let i = 0; i < sql.length; i++) {
+    const ch = sql[i];
+    if (ch === "'" && sql[i - 1] !== "\\") inSingle = !inSingle;
+    if (ch === ";" && !inSingle) {
+      const s = buf.trim();
+      if (s.length > 0) out.push(s);
+      buf = "";
+      continue;
+    }
+    buf += ch;
+  }
+  const tail = buf.trim();
+  if (tail.length > 0) out.push(tail);
+  return out;
+}
+
+/**
+ * Normalize a JS value for the binding's positional bind. The binding
+ * is strict; everything non-primitive is JSON-stringified so it lands
+ * in a VARCHAR column cleanly.
+ */
+function toBindValue(v: unknown): DuckDBValue {
+  if (v == null) return null as unknown as DuckDBValue;
+  if (typeof v === "string" || typeof v === "number" || typeof v === "boolean")
+    return v as DuckDBValue;
+  if (typeof v === "bigint") return v as DuckDBValue;
+  return JSON.stringify(v) as DuckDBValue;
+}
+
+/**
+ * DbExec wrapper over a DuckDBConnection. Same shape as the sqlite
+ * adapter's wrapSync; `run()` synthesizes a `{ changes }` result
+ * because the new binding doesn't surface one natively.
+ */
+function wrapAsync(conn: DuckDBConnection): DbExec {
   return {
     schemas: new Map(),
     async all(sql, params) {
-      return params.length > 0
-        ? await db.all(sql, ...params)
-        : await db.all(sql);
+      const reader =
+        params.length > 0
+          ? await conn.runAndReadAll(sql, params.map(toBindValue))
+          : await conn.runAndReadAll(sql);
+      return reader.getRowObjectsJS() as Record<string, unknown>[];
     },
     async run(sql, params) {
-      const result =
-        params.length > 0 ? await db.run(sql, ...params) : await db.run(sql);
-      return { changes: (result as any)?.changes ?? 0 };
+      // The query builder's `delete()` path goes through run() and
+      // expects a changes count. DuckDB supports RETURNING for
+      // DELETE/UPDATE/INSERT, so we rewrite unterminated DELETE
+      // statements to include RETURNING _id and count the result set.
+      // For everything else (DDL, INSERT without RETURNING, etc.) we
+      // report 0 — callers only read changes on DELETE right now.
+      const trimmed = sql.trim();
+      const isDelete =
+        /^delete\s/i.test(trimmed) && !/\breturning\b/i.test(trimmed);
+      if (isDelete) {
+        const rewritten = `${trimmed.replace(/;?$/, "")} RETURNING _id`;
+        const reader =
+          params.length > 0
+            ? await conn.runAndReadAll(rewritten, params.map(toBindValue))
+            : await conn.runAndReadAll(rewritten);
+        return { changes: reader.getRowObjectsJS().length };
+      }
+      if (params.length > 0) {
+        await conn.run(sql, params.map(toBindValue));
+      } else {
+        await conn.run(sql);
+      }
+      return { changes: 0 };
     },
   };
 }
 
 export interface DuckDBAdapterExtras {
+  /** Attach a SQLite database file as a readable schema under `alias`. */
   attachSqlite(alias: string, path: string): Promise<void>;
-  getDatabase(): Database;
+  /** Escape hatch — the underlying DuckDB connection. */
+  getConnection(): DuckDBConnection;
 }
 
 export type DuckDBAdapter = StorageAdapter & DuckDBAdapterExtras;
@@ -37,10 +135,12 @@ export type DuckDBAdapter = StorageAdapter & DuckDBAdapterExtras;
 export async function duckdbAdapter(
   path: string = ":memory:",
 ): Promise<DuckDBAdapter> {
-  const db = await Database.create(path);
-  const exec = wrapAsync(db);
+  const instance = await DuckDBInstance.create(path);
+  const conn = await instance.connect();
+  const exec = wrapAsync(conn);
   const changedTables = new Set<string>();
   let txDepth = 0;
+  let closed = false;
 
   const adapter: DuckDBAdapter = {
     name: "duckdb",
@@ -52,7 +152,7 @@ export async function duckdbAdapter(
         const duckType = toSqlType(colDef.type, "duckdb");
         colDefs.push(`"${colName}" ${duckType}`);
       }
-      await db.run(
+      await conn.run(
         `CREATE TABLE IF NOT EXISTS "${name}" (${colDefs.join(", ")})`,
       );
     },
@@ -62,7 +162,7 @@ export async function duckdbAdapter(
       const data: Record<string, any> = { ...row, _id: id };
       const keys = Object.keys(data);
       const values = keys.map((k) => serializeValue(data[k]));
-      await db.run(buildInsertSql(table, keys), ...values);
+      await conn.run(buildInsertSql(table, keys), values.map(toBindValue));
       changedTables.add(table);
       return id;
     },
@@ -78,7 +178,7 @@ export async function duckdbAdapter(
 
       if (existing) {
         const { sql, values } = buildUpdateSql(table, data);
-        await db.run(sql, ...values, existing._id);
+        await conn.run(sql, [...values, existing._id].map(toBindValue));
       } else {
         await adapter.insert(table, { ...keys, ...data });
       }
@@ -91,17 +191,17 @@ export async function duckdbAdapter(
       data: Record<string, any>,
     ): Promise<void> {
       const { sql, values } = buildUpdateSql(table, data);
-      await db.run(sql, ...values, id);
+      await conn.run(sql, [...values, id].map(toBindValue));
       changedTables.add(table);
     },
 
     async delete(table: string, id: string): Promise<boolean> {
-      const rows = await db.all(
+      const reader = await conn.runAndReadAll(
         `DELETE FROM "${table}" WHERE _id = ? RETURNING _id`,
-        id,
+        [id as DuckDBValue],
       );
       changedTables.add(table);
-      return rows.length > 0;
+      return reader.getRowObjectsJS().length > 0;
     },
 
     query(table: string) {
@@ -119,13 +219,13 @@ export async function duckdbAdapter(
         }
       }
       txDepth++;
-      await db.run("BEGIN TRANSACTION");
+      await conn.run("BEGIN TRANSACTION");
       try {
         const result = await fn();
-        await db.run("COMMIT");
+        await conn.run("COMMIT");
         return result;
       } catch (e) {
-        await db.run("ROLLBACK");
+        await conn.run("ROLLBACK");
         throw e;
       } finally {
         txDepth--;
@@ -136,16 +236,21 @@ export async function duckdbAdapter(
       sql: string,
       ...params: any[]
     ): Promise<T[]> {
-      return (
-        params.length > 0 ? await db.all(sql, ...params) : await db.all(sql)
-      ) as T[];
+      const reader =
+        params.length > 0
+          ? await conn.runAndReadAll(sql, params.map(toBindValue))
+          : await conn.runAndReadAll(sql);
+      return reader.getRowObjectsJS() as T[];
     },
 
     async rawExec(sql: string, ...params: any[]): Promise<void> {
       if (params.length > 0) {
-        await db.run(sql, ...params);
-      } else {
-        await db.run(sql);
+        await conn.run(sql, params.map(toBindValue));
+        return;
+      }
+      // No params — allow multi-statement DDL strings.
+      for (const stmt of splitStatements(sql)) {
+        await conn.run(stmt);
       }
     },
 
@@ -158,18 +263,21 @@ export async function duckdbAdapter(
       const keys = Object.keys(firstRow);
       const sql = buildInsertSql(table, keys);
 
-      await db.run("BEGIN TRANSACTION");
+      await conn.run("BEGIN TRANSACTION");
       try {
         for (const row of rows) {
           const data: Record<string, any> = {
             _id: row._id ?? generateId(12),
             ...row,
           };
-          await db.run(sql, ...keys.map((k) => serializeValue(data[k])));
+          await conn.run(
+            sql,
+            keys.map((k) => toBindValue(serializeValue(data[k]))),
+          );
         }
-        await db.run("COMMIT");
+        await conn.run("COMMIT");
       } catch (e) {
-        await db.run("ROLLBACK");
+        await conn.run("ROLLBACK");
         throw e;
       }
       changedTables.add(table);
@@ -186,17 +294,24 @@ export async function duckdbAdapter(
     },
 
     async close() {
-      await db.close();
+      if (closed) return;
+      closed = true;
+      try {
+        conn.closeSync();
+      } catch {}
+      try {
+        instance.closeSync();
+      } catch {}
     },
 
-    getDatabase() {
-      return db;
+    getConnection() {
+      return conn;
     },
 
     async attachSqlite(alias: string, sqlitePath: string) {
-      await db.run("INSTALL sqlite");
-      await db.run("LOAD sqlite");
-      await db.run(
+      await conn.run("INSTALL sqlite");
+      await conn.run("LOAD sqlite");
+      await conn.run(
         `ATTACH '${sqlitePath}' AS "${alias}" (TYPE sqlite, READ_ONLY)`,
       );
     },
