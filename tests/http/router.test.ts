@@ -1,0 +1,199 @@
+import { describe, expect, test } from "bun:test";
+import {
+  createRouter,
+  HttpError,
+  Middleware,
+} from "../../src/http/index.js";
+
+describe("router — matching", () => {
+  test("GET exact path", async () => {
+    const app = createRouter().get(
+      "/hello",
+      () => new Response("hi"),
+    );
+    const res = await app.handle(new Request("http://x/hello"));
+    expect(res.status).toBe(200);
+    expect(await res.text()).toBe("hi");
+  });
+
+  test("method discrimination", async () => {
+    const app = createRouter()
+      .get("/p", () => new Response("get"))
+      .post("/p", () => new Response("post"));
+    const a = await app.handle(new Request("http://x/p"));
+    const b = await app.handle(
+      new Request("http://x/p", { method: "POST" }),
+    );
+    expect(await a.text()).toBe("get");
+    expect(await b.text()).toBe("post");
+  });
+
+  test(":param capture", async () => {
+    const app = createRouter().get(
+      "/users/:id",
+      (ctx) => Response.json({ id: ctx.params.id }),
+    );
+    const res = await app.handle(new Request("http://x/users/42"));
+    expect(await res.json()).toEqual({ id: "42" });
+  });
+
+  test("wildcard capture under mount", async () => {
+    const inner = createRouter().all(
+      "/webhook/*",
+      (ctx) => Response.json({ rest: ctx.params["0"] }),
+    );
+    const app = createRouter().mount("/vex", inner);
+    const res = await app.handle(
+      new Request("http://x/vex/webhook/github/push"),
+    );
+    expect(await res.json()).toEqual({ rest: "github/push" });
+  });
+
+  test("unmatched path yields 404", async () => {
+    const app = createRouter().get("/a", () => new Response("a"));
+    const res = await app.handle(new Request("http://x/missing"));
+    expect(res.status).toBe(404);
+  });
+
+  test("handler can fall through by returning undefined", async () => {
+    const app = createRouter()
+      .get(
+        "/pick",
+        () => undefined,
+        () => new Response("second"),
+      )
+      .get("/pick", () => new Response("third"));
+    const res = await app.handle(new Request("http://x/pick"));
+    expect(await res.text()).toBe("second");
+  });
+});
+
+describe("router — middleware", () => {
+  test("middleware wraps the chain (onion order)", async () => {
+    const calls: string[] = [];
+    const tag =
+      (name: string): Middleware =>
+      async (_c, next) => {
+        calls.push(`>${name}`);
+        const r = await next();
+        calls.push(`<${name}`);
+        return r;
+      };
+    const app = createRouter()
+      .use(tag("a"))
+      .use(tag("b"))
+      .get("/", () => {
+        calls.push("h");
+        return new Response("ok");
+      });
+    await app.handle(new Request("http://x/"));
+    expect(calls).toEqual([">a", ">b", "h", "<b", "<a"]);
+  });
+
+  test("short-circuit middleware prevents handler", async () => {
+    let handlerRan = false;
+    const app = createRouter()
+      .use(async () => new Response("blocked", { status: 418 }))
+      .get("/", () => {
+        handlerRan = true;
+        return new Response("ok");
+      });
+    const res = await app.handle(new Request("http://x/"));
+    expect(res.status).toBe(418);
+    expect(handlerRan).toBe(false);
+  });
+});
+
+describe("router — mount", () => {
+  test("prefix strips before inner dispatch", async () => {
+    const inner = createRouter().get(
+      "/ping",
+      (ctx) => Response.json({ path: ctx.url.pathname }),
+    );
+    const app = createRouter().mount("/api", inner);
+    const res = await app.handle(new Request("http://x/api/ping"));
+    // The outer ctx's url.pathname reports the original path; the
+    // inner router saw `/ping` after rewrite.
+    expect(await res.json()).toEqual({ path: "/ping" });
+  });
+
+  test("non-matching prefix falls through to 404", async () => {
+    const inner = createRouter().get(
+      "/ping",
+      () => new Response("pong"),
+    );
+    const app = createRouter().mount("/api", inner);
+    const res = await app.handle(new Request("http://x/other"));
+    expect(res.status).toBe(404);
+  });
+
+  test("mount requires a non-empty prefix", () => {
+    expect(() => createRouter().mount("/", createRouter())).toThrow();
+  });
+});
+
+describe("router — error handling", () => {
+  test("HttpError renders via toResponse()", async () => {
+    const app = createRouter().get("/x", () => {
+      throw HttpError.forbidden("nope");
+    });
+    const res = await app.handle(new Request("http://x/x"));
+    expect(res.status).toBe(403);
+    expect(await res.json()).toEqual({ error: "nope" });
+  });
+
+  test("unclassified errors become 500", async () => {
+    const app = createRouter().get("/x", () => {
+      throw new Error("boom");
+    });
+    const res = await app.handle(new Request("http://x/x"));
+    expect(res.status).toBe(500);
+  });
+
+  test("onError receives the thrown value", async () => {
+    const app = createRouter()
+      .onError((_ctx, err) => {
+        return Response.json(
+          { caught: err instanceof Error ? err.message : String(err) },
+          { status: 500 },
+        );
+      })
+      .get("/x", () => {
+        throw new Error("boom");
+      });
+    const res = await app.handle(new Request("http://x/x"));
+    expect(await res.json()).toEqual({ caught: "boom" });
+  });
+
+  test("predicate routing for onError", async () => {
+    const app = createRouter()
+      .onError(
+        (err) => err instanceof HttpError && err.status === 404,
+        () => new Response("custom 404", { status: 404 }),
+      )
+      .get("/x", () => {
+        throw HttpError.notFound();
+      });
+    const res = await app.handle(new Request("http://x/x"));
+    expect(res.status).toBe(404);
+    expect(await res.text()).toBe("custom 404");
+  });
+});
+
+describe("router — body is consumable by handler", () => {
+  test("handler reads JSON body after mount/rewrite", async () => {
+    const inner = createRouter().post("/echo", async (ctx) => {
+      const body = await ctx.req.json();
+      return Response.json(body);
+    });
+    const app = createRouter().mount("/api", inner);
+    const res = await app.handle(
+      new Request("http://x/api/echo", {
+        method: "POST",
+        headers: { "content-type": "application/json" },
+        body: JSON.stringify({ n: 1 }),
+      }),
+    );
+    expect(await res.json()).toEqual({ n: 1 });
+  });
+});

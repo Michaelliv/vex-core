@@ -116,28 +116,129 @@ const vex = await Vex.create({
 
 Also supported in files: `webhook(path, handler)`, `job(schedule, handler)`, `middleware(fn)`.
 
-## HTTP handler
+## HTTP
 
-Mount a minimal HTTP handler for queries, mutations, webhooks, and SSE subscriptions.
+`vex-core/http` is a small, composable HTTP toolkit built around the Fetch API. A `Router` matches methods and paths (via `URLPattern`), middleware wraps the chain in classic onion order, handlers return `Response` (or `undefined` to fall through). Inspired by Vert.x Web and Koa; no dependencies beyond Bun/Node built-ins.
 
 ```ts
-import { createHandler } from "vex-core/server";
+import {
+  createRouter,
+  vexHandler,
+  cors,
+  bearerAuth,
+  accessLog,
+  requestId,
+  errorBoundary,
+  staticFiles,
+  sessions,
+  HttpError,
+} from "vex-core/http";
 
-const { handle } = createHandler("/vex", vex, { corsOrigin: "*" });
+const app = createRouter()
+  .use(errorBoundary())
+  .use(requestId())
+  .use(accessLog())
+  .use(cors({ origin: "*" }))
+  .use(bearerAuth({ token: process.env.VEX_TOKEN! }))
+  .mount("/vex", vexHandler(vex))
+  .use(staticFiles({ dir: "./dist/ui" }));
 
-Bun.serve({
-  port: 3000,
-  fetch: (req) => handle(req),
-});
+Bun.serve({ port: 3000, fetch: (req) => app.handle(req) });
 ```
 
-Routes:
+### Router
+
+```ts
+createRouter({ prefix?: "/api" })
+  .use(mw)                                   // global middleware
+  .get("/users/:id", handler)                // also post/put/patch/delete/options/head/all
+  .get("/users/:id", mw1, mw2, finalHandler) // handler chain — `undefined` = fall through
+  .mount("/vex", subRouter)                  // strip prefix, dispatch to inner router
+  .onError(handler)                          // catchall
+  .onError((err) => err instanceof HttpError && err.status === 404, render404);
+```
+
+Path syntax is whatever [URLPattern](https://developer.mozilla.org/en-US/docs/Web/API/URLPattern) supports: `:param`, `*`, regex groups. Captures land in `ctx.params`.
+
+### Context
+
+Every middleware and handler receives a `RequestCtx`:
+
+```ts
+interface RequestCtx {
+  req: Request;
+  url: URL;
+  params: Record<string, string>;
+  state: Record<string, unknown>;   // scratchpad: request id, parsed body, logger bindings
+  signal: AbortSignal;
+  user?: VexUser | null;             // set by auth middleware
+  session?: Session;                 // set by sessions middleware
+  span?: Span;                       // set by tracer middleware
+}
+```
+
+### HttpError
+
+```ts
+throw HttpError.badRequest("Missing id");
+throw HttpError.unauthorized();
+throw HttpError.notFound();
+throw HttpError.tooManyRequests(30);           // Retry-After: 30
+throw new HttpError(418, "I'm a teapot", { body: { code: "TEAPOT" } });
+```
+
+The router catches any thrown error, renders `HttpError` via `.toResponse()`, wraps everything else as a 500.
+
+### Vex dispatcher
+
+```ts
+vexHandler(vex, opts?)   // a Router; mount anywhere
+```
+
+Exposes, relative to wherever it's mounted:
 
 ```
-POST /vex/query            { name, args }
-POST /vex/mutate           { name, args }
-GET  /vex/subscribe        ?name=...&args=... (SSE)
-*    /vex/webhook/:path    user-defined webhooks
+POST /query              { name, args? }
+POST /mutate             { name, args? }
+GET  /subscribe          ?name=...&args=... (SSE)
+ALL  /webhook/*          user-defined webhooks
+```
+
+### Middleware catalog
+
+| Middleware    | What it does |
+|---------------|--------------|
+| `errorBoundary({ devStackTraces, logger })` | Catches thrown errors, renders `HttpError`, wraps everything else as 500. |
+| `requestId({ header, generator })`          | Read or mint `X-Request-Id`; stash on `ctx.state.requestId`; echo on response. |
+| `accessLog({ logger, skipPaths })`          | One line per request: `GET /path -> 200 (12ms)`. |
+| `cors({ origin, credentials, allowedHeaders, maxAge })` | Fetch-standard CORS. Downgrades `*` to request origin when `credentials: true`. |
+| `bearerAuth({ token, publicPaths, loginPage })` | Single-token HTTP gate: `Authorization: Bearer` OR session cookie. Built-in `/login` + `/logout`; per-IP rate limit on failures. |
+| `bodyParser({ limit, json, urlencoded, text })` | Parse request body into `ctx.state.body`. |
+| `rateLimit({ requests, window, key })`      | 429 + `Retry-After` + `X-RateLimit-*`. |
+| `staticFiles({ dir, index, spaFallback, immutablePrefix })` | Serve built assets. Fallback-on-404 semantics: explicit routes win, static serves what's left. SPA-friendly. |
+| `sessions({ storage, cookieName, maxAge, rolling })` | Server-side session store on any `StorageAdapter` (sqlite/duckdb/custom). `ctx.session.get/set/delete/destroy`. |
+
+### Sessions
+
+Backed by any vex-core `StorageAdapter`. One row per session, cookie holds the id, data is a JSON blob with sliding expiry.
+
+```ts
+import { sessions } from "vex-core/http";
+import { sqliteAdapter } from "vex-core";
+
+const store = sqliteAdapter("./sessions.db");
+
+app.use(sessions({ storage: store, maxAge: 86400 * 7 }))
+   .post("/login", async (ctx) => {
+     const { email } = (await ctx.req.json()) as { email: string };
+     ctx.session?.set("email", email);
+     return new Response("ok");
+   })
+   .get("/me", (ctx) => Response.json({ email: ctx.session?.get("email") ?? null }))
+   .post("/logout", async (ctx) => {
+     await ctx.session?.destroy();
+     return new Response("ok");
+   });
 ```
 
 ## React client
@@ -172,7 +273,7 @@ Every engine operation is a span. Pass a `tracer` to `Vex.create` to capture que
 |-------|----------|
 | `vex-core` | `Vex`, `sqliteAdapter`, `duckdbAdapter`, `id`, core types, tracer, auth helpers |
 | `vex-core/framework` | `table`, `query`, `mutation`, `webhook`, `job`, `middleware`, `scanDirectory` |
-| `vex-core/server` | `createHandler` |
+| `vex-core/http` | `Router`, `createRouter`, `HttpError`, `compose`, `vexHandler`, plus middleware (`cors`, `bearerAuth`, `bodyParser`, `accessLog`, `requestId`, `rateLimit`, `staticFiles`, `errorBoundary`, `sessions`) |
 | `vex-core/client` | `VexProvider`, `useQuery`, `useMutation` |
 | `vex-core/adapters/sqlite` | `sqliteAdapter` |
 | `vex-core/adapters/duckdb` | `duckdbAdapter` |

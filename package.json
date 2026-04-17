@@ -1,6 +1,6 @@
 {
   "name": "vex-core",
-  "version": "0.2.0",
+  "version": "0.3.0",
   "description": "Local-first reactive backend engine. Plugin architecture, SQLite + DuckDB storage, real-time subscriptions.",
   "type": "module",
   "main": "./dist/index.js",
@@ -16,10 +16,10 @@
       "import": "./dist/client/index.js",
       "default": "./dist/client/index.js"
     },
-    "./server": {
-      "types": "./dist/server/index.d.ts",
-      "import": "./dist/server/index.js",
-      "default": "./dist/server/index.js"
+    "./http": {
+      "types": "./dist/http/index.d.ts",
+      "import": "./dist/http/index.js",
+      "default": "./dist/http/index.js"
     },
     "./framework": {
       "types": "./dist/framework/index.d.ts",

@@ -1,8 +1,12 @@
 import { afterAll, beforeAll, describe, expect, test } from "bun:test";
-import { Vex } from "../src/core/engine.js";
-import { sqliteAdapter } from "../src/adapters/sqlite.js";
-import { createHandler } from "../src/server/handler.js";
 import type { Server } from "bun";
+import { sqliteAdapter } from "../src/adapters/sqlite.js";
+import { Vex } from "../src/core/engine.js";
+import {
+  cors,
+  createRouter,
+  vexHandler,
+} from "../src/http/index.js";
 
 let vex: Vex;
 let server: Server;
@@ -26,7 +30,11 @@ async function readSSEMessage(url: string): Promise<any> {
   throw new Error("SSE stream ended without data");
 }
 
-async function collectSSEMessages(url: string, count: number, timeoutMs = 3000): Promise<any[]> {
+async function collectSSEMessages(
+  url: string,
+  count: number,
+  timeoutMs = 3000,
+): Promise<any[]> {
   const res = await fetch(url);
   const reader = res.body!.getReader();
   const decoder = new TextDecoder();
@@ -57,7 +65,10 @@ beforeAll(async () => {
         name: "items",
         tables: { items: { columns: { name: "string", value: "number" } } },
         queries: {
-          list: { args: {}, handler: async (ctx) => ctx.db.table("items").all() },
+          list: {
+            args: {},
+            handler: async (ctx) => ctx.db.table("items").all(),
+          },
           byName: {
             args: { name: "string" },
             handler: async (ctx, args) =>
@@ -74,10 +85,12 @@ beforeAll(async () => {
     ],
   });
 
-  const handler = createHandler("/vex", vex);
+  // Build the composed app exactly the way dripyard will:
+  //   cors  →  mount("/vex", vexHandler(vex))
+  const app = createRouter().use(cors()).mount("/vex", vexHandler(vex));
   server = Bun.serve({
     port: 0,
-    fetch: (req) => handler.handle(req),
+    fetch: (req) => app.handle(req),
   });
   base = `http://localhost:${server.port}`;
 });
@@ -93,7 +106,9 @@ describe("CORS and routing", () => {
     expect(res.status).toBe(204);
     expect(res.headers.get("Access-Control-Allow-Origin")).toBe("*");
     expect(res.headers.get("Access-Control-Allow-Methods")).toContain("POST");
-    expect(res.headers.get("Access-Control-Allow-Headers")).toContain("Content-Type");
+    expect(res.headers.get("Access-Control-Allow-Headers")).toContain(
+      "Content-Type",
+    );
   });
 
   test("responses include CORS headers", async () => {
@@ -109,7 +124,7 @@ describe("CORS and routing", () => {
     const res = await fetch(`${base}/vex/nope`);
     expect(res.status).toBe(404);
     const body = await res.json();
-    expect(body.error).toBe("Not found");
+    expect(body.error).toBe("Not Found");
   });
 });
 
@@ -153,7 +168,10 @@ describe("mutation endpoint", () => {
     const res = await fetch(`${base}/vex/mutate`, {
       method: "POST",
       headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({ name: "items.create", args: { name: "a", value: 1 } }),
+      body: JSON.stringify({
+        name: "items.create",
+        args: { name: "a", value: 1 },
+      }),
     });
     expect(res.ok).toBe(true);
     const body = await res.json();
@@ -192,7 +210,10 @@ describe("SSE subscription", () => {
   });
 
   test("returns 400 for invalid args JSON", async () => {
-    const params = new URLSearchParams({ name: "items.list", args: "not{json" });
+    const params = new URLSearchParams({
+      name: "items.list",
+      args: "not{json",
+    });
     const res = await fetch(`${base}/vex/subscribe?${params}`);
     expect(res.status).toBe(400);
     const body = await res.json();
@@ -209,15 +230,16 @@ describe("SSE subscription", () => {
     const params = new URLSearchParams({ name: "items.list", args: "{}" });
     const url = `${base}/vex/subscribe?${params}`;
 
-    // Start collecting — expect initial + 1 push = 2 messages
     const collecting = collectSSEMessages(url, 2);
 
-    // Small delay to let SSE connect, then mutate
     await Bun.sleep(100);
     await fetch(`${base}/vex/mutate`, {
       method: "POST",
       headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({ name: "items.create", args: { name: "sse-push", value: 77 } }),
+      body: JSON.stringify({
+        name: "items.create",
+        args: { name: "sse-push", value: 77 },
+      }),
     });
 
     const messages = await collecting;
@@ -227,11 +249,13 @@ describe("SSE subscription", () => {
   });
 
   test("receives filtered data with args", async () => {
-    // Insert a known item
     await fetch(`${base}/vex/mutate`, {
       method: "POST",
       headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({ name: "items.create", args: { name: "unique-filter", value: 42 } }),
+      body: JSON.stringify({
+        name: "items.create",
+        args: { name: "unique-filter", value: 42 },
+      }),
     });
 
     const params = new URLSearchParams({
@@ -248,7 +272,10 @@ describe("SSE subscription", () => {
     await fetch(`${base}/vex/mutate`, {
       method: "POST",
       headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({ name: "items.create", args: { name: "only-this", value: 999 } }),
+      body: JSON.stringify({
+        name: "items.create",
+        args: { name: "only-this", value: 999 },
+      }),
     });
 
     const allParams = new URLSearchParams({ name: "items.list", args: "{}" });

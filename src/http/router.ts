@@ -1,0 +1,342 @@
+/**
+ * Router — the central HTTP composition primitive.
+ *
+ * Inspired by Vert.x Web's `Router`, Express, and Koa. Takes Fetch-API
+ * Request/Response and gives back the same. Matches on method + path
+ * via `URLPattern` (so `:param` capture, wildcards, and regex-like
+ * segments are all available for free). Handlers that return `undefined`
+ * fall through to the next matching route — this is what makes
+ * `router.get(path, mw1, mw2, finalHandler)` chains work.
+ *
+ * Error handling
+ *   - Thrown HttpError renders as its response directly.
+ *   - Other thrown errors fall to the router's onError handlers in
+ *     registration order; if none match, a 500 is returned.
+ *   - When a handler returns a Response with a status matching an
+ *     onError predicate, the predicate does NOT fire — we don't want
+ *     a `return notFound()` to re-enter the error pipeline.
+ *
+ * Composition
+ *   - `router.mount(prefix, inner)` strips `prefix` from the pathname
+ *     before dispatching to `inner`. Prefixes must NOT end in `/`.
+ *   - `router.use(mw)` adds middleware that runs before every matcher.
+ *   - Nested routers inherit nothing except their path scope; parent
+ *     middleware runs before the child's dispatch.
+ */
+
+import { compose } from "./compose.js";
+import { HttpError, isHttpError } from "./error.js";
+import type {
+  ErrorHandler,
+  Handler,
+  Middleware,
+  RequestCtx,
+} from "./types.js";
+
+type Method =
+  | "GET"
+  | "POST"
+  | "PUT"
+  | "PATCH"
+  | "DELETE"
+  | "OPTIONS"
+  | "HEAD"
+  | "ALL";
+
+interface Route {
+  method: Method;
+  pattern: URLPattern;
+  handlers: Handler[];
+}
+
+interface Mount {
+  prefix: string;
+  inner: (req: Request, parent?: Partial<RequestCtx>) => Promise<Response>;
+}
+
+interface RegisteredErrorHandler {
+  predicate: (err: unknown, ctx: RequestCtx) => boolean;
+  handler: ErrorHandler;
+}
+
+export interface RouterOptions {
+  /** Prefix applied to every route added after construction. Defaults to "". */
+  prefix?: string;
+}
+
+/**
+ * Build a RequestCtx for the incoming Request. The URL is always
+ * derived from `req` so mount-rewritten requests produce a fresh URL
+ * reflecting the stripped prefix; middleware annotations (`state`,
+ * `user`, `session`, `span`, `params`) carry across from the parent
+ * when present.
+ */
+function buildCtx(
+  req: Request,
+  params: Record<string, string>,
+  parent?: Partial<RequestCtx>,
+): RequestCtx {
+  return {
+    req,
+    url: new URL(req.url),
+    params: { ...(parent?.params ?? {}), ...params },
+    state: parent?.state ?? Object.create(null),
+    signal: parent?.signal ?? req.signal,
+    user: parent?.user,
+    span: parent?.span,
+    session: parent?.session,
+  };
+}
+
+export class Router {
+  private readonly prefix: string;
+  private readonly middlewares: Middleware[] = [];
+  private readonly routes: Route[] = [];
+  private readonly mounts: Mount[] = [];
+  private readonly errorHandlers: RegisteredErrorHandler[] = [];
+
+  constructor(opts: RouterOptions = {}) {
+    this.prefix = normalizePrefix(opts.prefix ?? "");
+  }
+
+  /** Add middleware that runs before route matching for this router. */
+  use(mw: Middleware): this {
+    this.middlewares.push(mw);
+    return this;
+  }
+
+  /** Register handlers for any method matching the path. */
+  all(path: string, ...handlers: Handler[]): this {
+    return this.route("ALL", path, handlers);
+  }
+  get(path: string, ...handlers: Handler[]): this {
+    return this.route("GET", path, handlers);
+  }
+  post(path: string, ...handlers: Handler[]): this {
+    return this.route("POST", path, handlers);
+  }
+  put(path: string, ...handlers: Handler[]): this {
+    return this.route("PUT", path, handlers);
+  }
+  patch(path: string, ...handlers: Handler[]): this {
+    return this.route("PATCH", path, handlers);
+  }
+  delete(path: string, ...handlers: Handler[]): this {
+    return this.route("DELETE", path, handlers);
+  }
+  options(path: string, ...handlers: Handler[]): this {
+    return this.route("OPTIONS", path, handlers);
+  }
+  head(path: string, ...handlers: Handler[]): this {
+    return this.route("HEAD", path, handlers);
+  }
+
+  /**
+   * Mount a sub-router (or any Request → Response function) at a
+   * path prefix. The prefix is stripped from req.url before the
+   * inner handler sees it; middleware on the outer router still runs
+   * first.
+   */
+  mount(
+    prefix: string,
+    inner: Router | ((req: Request) => Response | Promise<Response>),
+  ): this {
+    const p = normalizePrefix(prefix);
+    if (!p) throw new Error("mount() requires a non-empty prefix");
+    const innerFn =
+      inner instanceof Router
+        ? inner.dispatch.bind(inner)
+        : async (req: Request) => inner(req);
+    this.mounts.push({ prefix: p, inner: innerFn });
+    return this;
+  }
+
+  /**
+   * Register an error handler. Predicate defaults to "any error".
+   * Walk order is registration order; the first matching predicate
+   * handles the error.
+   */
+  onError(handler: ErrorHandler): this;
+  onError(
+    predicate: (err: unknown, ctx: RequestCtx) => boolean,
+    handler: ErrorHandler,
+  ): this;
+  onError(
+    a: ErrorHandler | ((err: unknown, ctx: RequestCtx) => boolean),
+    b?: ErrorHandler,
+  ): this {
+    if (b) {
+      this.errorHandlers.push({
+        predicate: a as (err: unknown, ctx: RequestCtx) => boolean,
+        handler: b,
+      });
+    } else {
+      this.errorHandlers.push({
+        predicate: () => true,
+        handler: a as ErrorHandler,
+      });
+    }
+    return this;
+  }
+
+  /** Dispatch a Request through this router. The top-level entry point. */
+  async handle(req: Request): Promise<Response> {
+    return this.dispatch(req);
+  }
+
+  /**
+   * Internal dispatch. Separate from `handle` so mounted routers can
+   * thread the parent's ctx annotations through.
+   */
+  async dispatch(
+    req: Request,
+    parent?: Partial<RequestCtx>,
+  ): Promise<Response> {
+    const ctx = buildCtx(req, {}, parent);
+
+    const terminal = async (c: RequestCtx): Promise<Response> => {
+      const response = await this.match(c, req);
+      if (response) return response;
+      throw HttpError.notFound();
+    };
+
+    const run =
+      this.middlewares.length === 0
+        ? terminal
+        : compose(this.middlewares, terminal);
+
+    // Single try/catch wrapping both middleware and route dispatch so
+    // a throw anywhere in the chain is converted to a Response.
+    try {
+      return await run(ctx);
+    } catch (err) {
+      return this.handleError(ctx, err);
+    }
+  }
+
+  // ─── internals ───────────────────────────────────────────────────
+
+  private route(method: Method, path: string, handlers: Handler[]): this {
+    if (handlers.length === 0) {
+      throw new Error(`${method} ${path}: at least one handler required`);
+    }
+    const full = joinPath(this.prefix, path);
+    // URLPattern lets us use `:param`, `*`, and regex groups. We pin
+    // pathname matching; method and host are not part of the pattern.
+    const pattern = new URLPattern({ pathname: full });
+    this.routes.push({ method, pattern, handlers });
+    return this;
+  }
+
+  private async match(
+    ctx: RequestCtx,
+    req: Request,
+  ): Promise<Response | undefined> {
+    const { pathname } = ctx.url;
+    const method = req.method.toUpperCase() as Method;
+
+    // Mounts win over routes when both could match — a mounted
+    // subrouter is the expression of "everything under /api", and
+    // a parent route at the same prefix would be surprising.
+    for (const mount of this.mounts) {
+      if (pathname === mount.prefix || pathname.startsWith(mount.prefix + "/")) {
+        const rewritten = rewriteRequestPath(req, ctx.url, mount.prefix);
+        const response = await mount.inner(rewritten, ctx);
+        // Don't swallow a 404 from the inner router — let it stand,
+        // callers can install a catch-all at the parent if they want
+        // a different fallback.
+        return response;
+      }
+    }
+
+    for (const route of this.routes) {
+      if (route.method !== "ALL" && route.method !== method) continue;
+      const match = route.pattern.exec({ pathname });
+      if (!match) continue;
+      const params = extractParams(match);
+      const routeCtx: RequestCtx = { ...ctx, params: { ...ctx.params, ...params } };
+      for (const handler of route.handlers) {
+        const result = await handler(routeCtx);
+        if (result instanceof Response) return result;
+        // undefined → fall through to next handler in this route
+      }
+      // Every handler returned undefined. Fall through to the next
+      // matching route instead of 404ing immediately.
+    }
+
+    return undefined;
+  }
+
+  private async handleError(
+    ctx: RequestCtx,
+    err: unknown,
+  ): Promise<Response> {
+    for (const { predicate, handler } of this.errorHandlers) {
+      if (!predicate(err, ctx)) continue;
+      try {
+        return await handler(ctx, err);
+      } catch (nested) {
+        // Error handlers that themselves throw are a bug in user code.
+        // Log loudly and fall through to the default response rather
+        // than swallowing silently.
+        // biome-ignore lint/suspicious/noConsole: last-resort error log
+        console.error("[router] error handler threw:", nested);
+        break;
+      }
+    }
+    if (isHttpError(err)) return err.toResponse();
+    return HttpError.internal(
+      err instanceof Error ? err.message : String(err),
+      err,
+    ).toResponse();
+  }
+}
+
+/** Shortcut: `createRouter(opts?)`. */
+export function createRouter(opts?: RouterOptions): Router {
+  return new Router(opts);
+}
+
+// ─── helpers ───────────────────────────────────────────────────────
+
+function normalizePrefix(prefix: string): string {
+  if (!prefix) return "";
+  let p = prefix.startsWith("/") ? prefix : `/${prefix}`;
+  while (p.length > 1 && p.endsWith("/")) p = p.slice(0, -1);
+  return p === "/" ? "" : p;
+}
+
+function joinPath(prefix: string, path: string): string {
+  if (!prefix) return path.startsWith("/") ? path : `/${path}`;
+  if (!path || path === "/") return prefix;
+  const tail = path.startsWith("/") ? path : `/${path}`;
+  return prefix + tail;
+}
+
+function extractParams(match: URLPatternResult): Record<string, string> {
+  const out: Record<string, string> = {};
+  const groups = match.pathname.groups as Record<string, string | undefined>;
+  for (const [k, v] of Object.entries(groups)) {
+    if (typeof v === "string") out[k] = v;
+  }
+  return out;
+}
+
+/**
+ * Strip the mount prefix from the request URL before handing it to an
+ * inner handler. Produces a new Request so headers/body/signal are
+ * preserved, but the URL reflects what the inner handler expects to
+ * see. The original Request is not mutated.
+ */
+function rewriteRequestPath(
+  req: Request,
+  url: URL,
+  prefix: string,
+): Request {
+  const newUrl = new URL(url);
+  newUrl.pathname = url.pathname.slice(prefix.length) || "/";
+  // Bun's Request constructor accepts a URL + init; we carry the
+  // method, headers, body, and signal forward. Body can only be
+  // read once — Request-from-Request is a clone, so this is safe.
+  return new Request(newUrl, req);
+}
