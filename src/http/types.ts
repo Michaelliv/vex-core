@@ -10,7 +10,7 @@
  * actually useful.
  */
 
-import type { Span } from "../core/tracer.js";
+import type { SpanHandle } from "../core/tracer.js";
 import type { VexUser } from "../core/types.js";
 
 /** Optional session interface — set by the sessions middleware when enabled. */
@@ -38,7 +38,14 @@ export interface RequestCtx {
   readonly state: Record<string, unknown>;
   readonly signal: AbortSignal;
   user?: VexUser | null;
-  span?: Span;
+  /**
+   * The live span handle for the current request, set by whatever
+   * tracing middleware the app composed. Middleware and handlers can
+   * attach children via `ctx.span.child(type, name)`. Note this is
+   * the *mutable handle*, not the emitted Span record — the record
+   * only exists after `.end()` closes the span.
+   */
+  span?: SpanHandle;
   session?: Session;
 }
 
