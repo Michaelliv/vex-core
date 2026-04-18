@@ -1,6 +1,6 @@
 # Compiled binaries
-vex
-vex-*
+/vex
+/vex-*
 
 # Logs
 *.log
