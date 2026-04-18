@@ -19,9 +19,7 @@ export interface ErrorBoundaryOptions {
   logger?: (err: unknown) => void;
 }
 
-export function errorBoundary(
-  options: ErrorBoundaryOptions = {},
-): Middleware {
+export function errorBoundary(options: ErrorBoundaryOptions = {}): Middleware {
   const devStackTraces = options.devStackTraces ?? false;
   const logger =
     options.logger ??
@@ -40,7 +38,8 @@ export function errorBoundary(
       }
       logger(err);
       if (devStackTraces) {
-        const msg = err instanceof Error ? err.stack ?? err.message : String(err);
+        const msg =
+          err instanceof Error ? (err.stack ?? err.message) : String(err);
         return new Response(msg, {
           status: 500,
           headers: { "content-type": "text/plain; charset=utf-8" },

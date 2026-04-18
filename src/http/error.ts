@@ -26,11 +26,13 @@ export class HttpError extends Error {
       cause?: unknown;
     } = {},
   ) {
-    super(message, opts.cause !== undefined ? { cause: opts.cause } : undefined);
+    super(
+      message,
+      opts.cause !== undefined ? { cause: opts.cause } : undefined,
+    );
     this.name = "HttpError";
     this.status = status;
-    this.body =
-      opts.body !== undefined ? opts.body : { error: message };
+    this.body = opts.body !== undefined ? opts.body : { error: message };
     this.headers = opts.headers ?? {};
     // 4xx errors expose details by default; 5xx errors hide them.
     this.expose = opts.expose ?? (status >= 400 && status < 500);
@@ -74,7 +76,10 @@ export class HttpError extends Error {
   static conflict(message = "Conflict") {
     return new HttpError(409, message);
   }
-  static tooManyRequests(retryAfterSeconds: number, message = "Too Many Requests") {
+  static tooManyRequests(
+    retryAfterSeconds: number,
+    message = "Too Many Requests",
+  ) {
     return new HttpError(429, message, {
       headers: { "retry-after": String(retryAfterSeconds) },
     });

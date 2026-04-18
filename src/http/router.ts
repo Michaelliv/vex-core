@@ -31,12 +31,7 @@
 
 import { compose } from "./compose.js";
 import { HttpError, isHttpError } from "./error.js";
-import type {
-  ErrorHandler,
-  Handler,
-  Middleware,
-  RequestCtx,
-} from "./types.js";
+import type { ErrorHandler, Handler, Middleware, RequestCtx } from "./types.js";
 
 type Method =
   | "GET"
@@ -281,10 +276,7 @@ export class Router {
     return undefined;
   }
 
-  private async handleError(
-    ctx: RequestCtx,
-    err: unknown,
-  ): Promise<Response> {
+  private async handleError(ctx: RequestCtx, err: unknown): Promise<Response> {
     for (const { predicate, handler } of this.errorHandlers) {
       if (!predicate(err, ctx)) continue;
       try {
@@ -293,7 +285,6 @@ export class Router {
         // Error handlers that themselves throw are a bug in user code.
         // Log loudly and fall through to the default response rather
         // than swallowing silently.
-        // biome-ignore lint/suspicious/noConsole: last-resort error log
         console.error("[router] error handler threw:", nested);
         break;
       }
@@ -342,11 +333,7 @@ function extractParams(match: URLPatternResult): Record<string, string> {
  * preserved, but the URL reflects what the inner handler expects to
  * see. The original Request is not mutated.
  */
-function rewriteRequestPath(
-  req: Request,
-  url: URL,
-  prefix: string,
-): Request {
+function rewriteRequestPath(req: Request, url: URL, prefix: string): Request {
   const newUrl = new URL(url);
   newUrl.pathname = url.pathname.slice(prefix.length) || "/";
   // Bun's Request constructor accepts a URL + init; we carry the

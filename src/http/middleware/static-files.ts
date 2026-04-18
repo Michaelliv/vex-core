@@ -67,7 +67,9 @@ export function staticFiles(options: StaticFilesOptions): Middleware {
   const index = options.index ?? "index.html";
   const spaFallback = options.spaFallback ?? true;
   const immutablePrefix =
-    options.immutablePrefix === undefined ? "/assets/" : options.immutablePrefix;
+    options.immutablePrefix === undefined
+      ? "/assets/"
+      : options.immutablePrefix;
 
   const rootExists = existsSync(root);
   if (!rootExists) {
@@ -177,9 +179,7 @@ async function serve(
 function tryBunFile(
   path: string,
 ): ({ exists(): Promise<boolean>; size: number } & object) | null {
-  // @ts-ignore — Bun is a runtime global we feature-detect
   if (typeof Bun === "undefined" || !Bun?.file) return null;
-  // @ts-ignore
   return Bun.file(path);
 }
 

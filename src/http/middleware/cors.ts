@@ -92,7 +92,9 @@ export function cors(options: CorsOptions = {}): Middleware {
     }
     // Merge onto the downstream response without cloning the body.
     const headers = new Headers(response.headers);
-    corsHeaders.forEach((v, k) => headers.set(k, v));
+    corsHeaders.forEach((v, k) => {
+      headers.set(k, v);
+    });
     return new Response(response.body, {
       status: response.status,
       statusText: response.statusText,

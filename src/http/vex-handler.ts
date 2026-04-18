@@ -13,7 +13,7 @@
 
 import type { Vex } from "../core/engine.js";
 import type { VexUser } from "../core/types.js";
-import { createRouter, Router } from "./router.js";
+import { createRouter, type Router } from "./router.js";
 import type { Handler, RequestCtx } from "./types.js";
 
 export interface VexHandlerOptions {
@@ -25,10 +25,7 @@ export interface VexHandlerOptions {
   getUser?: (ctx: RequestCtx) => VexUser | null | undefined;
 }
 
-export function vexHandler(
-  vex: Vex,
-  opts: VexHandlerOptions = {},
-): Router {
+export function vexHandler(vex: Vex, opts: VexHandlerOptions = {}): Router {
   const getUser = opts.getUser ?? ((c: RequestCtx) => c.user ?? null);
 
   const router = createRouter();
@@ -232,5 +229,3 @@ function errorMessage(err: unknown): string {
     return String(err);
   }
 }
-
-

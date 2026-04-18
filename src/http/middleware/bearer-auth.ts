@@ -48,12 +48,7 @@ export interface BearerAuthOptions {
   failureWindowSeconds?: number;
 }
 
-const DEFAULT_PUBLIC_PATHS = [
-  "/login",
-  "/logout",
-  "/health",
-  "/favicon.ico",
-];
+const DEFAULT_PUBLIC_PATHS = ["/login", "/logout", "/health", "/favicon.ico"];
 
 export function bearerAuth(options: BearerAuthOptions): Middleware {
   const cookieName = options.cookieName ?? "vex_auth";
@@ -253,10 +248,7 @@ function handleLogout(
   });
 }
 
-function handleLoginPage(
-  ctx: { url: URL },
-  brand: string,
-): Response {
+function handleLoginPage(ctx: { url: URL }, brand: string): Response {
   return new Response(renderLoginPage("", brand), {
     status: 200,
     headers: { "content-type": "text/html; charset=utf-8" },
@@ -292,9 +284,7 @@ function escapeHtml(s: string): string {
 }
 
 function renderLoginPage(message = "", brand = "vex"): string {
-  const msg = message
-    ? `<p class="msg">${escapeHtml(message)}</p>`
-    : "";
+  const msg = message ? `<p class="msg">${escapeHtml(message)}</p>` : "";
   return `<!doctype html>
 <html lang="en"><head>
 <meta charset="utf-8">
