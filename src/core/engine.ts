@@ -62,6 +62,11 @@ export class Vex {
   private mutations: Map<string, RegisteredMutation> = new Map();
   private subscriptions: Map<string, Subscription> = new Map();
   private tableStorageMode: Map<string, StorageMode> = new Map();
+  // Who registered each table. Two plugins registering the same bare
+  // name silently share one SQL table with merged schemas — one plugin's
+  // NOT NULL can break the other's inserts. registerPlugin fails loudly
+  // on collision using this map.
+  private tableOwners: Map<string, string> = new Map();
   private middleware: MiddlewareFn[] = [];
   private cronTimers: Map<string, ReturnType<typeof setInterval>> = new Map();
   private jobHandlers: Map<string, JobDef> = new Map();
@@ -343,12 +348,6 @@ export class Vex {
     const mode = this.tableStorageMode.get(table) ?? "transactional";
     return mode === "analytical" ? this.analytical : this.transactional;
   }
-
-  // Track who registered each table, so collisions can point a finger.
-  // Two plugins registering the same bare table name silently share one
-  // SQL table with merged schemas — inserts that satisfy one plugin's
-  // schema can fail the other's NOT NULL constraints. Prevent the class.
-  private tableOwners: Map<string, string> = new Map();
 
   private async registerPlugin(plugin: PluginDef): Promise<void> {
     if (plugin.middleware) this.middleware.push(...plugin.middleware);
