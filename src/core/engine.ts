@@ -215,19 +215,41 @@ export class Vex {
 
     // Admin-only raw SQL escape hatch. Needed for ad-hoc migrations
     // (rename/drop tables after a plugin refactor) and one-off fixes.
-    // Bypasses the query/mutation surface entirely — no plugin owns it,
-    // no transaction wrapping, no schema validation. Use sparingly.
+    // Bypasses schema validation entirely. Use sparingly.
+    //
+    // Transaction handling:
+    //   - transactional target (default): already wrapped by vex.mutate()
+    //     in a SQLite transaction, so DDL and DML roll back cleanly on
+    //     error without any extra work here.
+    //   - analytical target: the outer SQLite transaction doesn't cover
+    //     DuckDB calls, so we wrap explicitly. Pass noTransaction: 1 for
+    //     statements DuckDB refuses inside a transaction.
+    //
+    // Does NOT trigger subscription invalidation — callers subscribed to
+    // affected tables won't auto-refresh. Known limitation.
     vex.mutations.set("_system.sql", {
       plugin: "_system",
       def: {
-        args: { sql: "string", params: "json", analytical: "number" },
+        args: {
+          sql: "string",
+          params: "json",
+          analytical: "number",
+          noTransaction: "number",
+        },
         async handler(ctx: MutationContext, args: Record<string, any>) {
           if (!ctx.user?.isAdmin) {
             throw new Error("_system.sql requires admin privileges");
           }
           const params = Array.isArray(args.params) ? args.params : [];
-          const target = args.analytical ? vex.analytical : vex.transactional;
-          return target.rawQuery(args.sql, ...params);
+          if (args.analytical) {
+            if (args.noTransaction) {
+              return vex.analytical.rawQuery(args.sql, ...params);
+            }
+            return vex.analytical.transaction(() =>
+              vex.analytical.rawQuery(args.sql, ...params),
+            );
+          }
+          return vex.transactional.rawQuery(args.sql, ...params);
         },
       },
     });
