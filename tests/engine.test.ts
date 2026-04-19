@@ -727,6 +727,25 @@ describe("plugin name collisions", () => {
     ).rejects.toThrow("Duplicate mutation: items.add");
   });
 
+  test("duplicate table name throws", async () => {
+    expect(
+      Vex.create({
+        plugins: [
+          (api: VexPluginAPI) => {
+            api.setName("a");
+            api.registerTable("runs", { columns: { name: { type: "string" } } });
+          },
+          (api: VexPluginAPI) => {
+            api.setName("b");
+            api.registerTable("runs", { columns: { other: { type: "string" } } });
+          },
+        ],
+        transactional: sqliteAdapter(":memory:"),
+        analytical: sqliteAdapter(":memory:"),
+      }),
+    ).rejects.toThrow("Duplicate table \"runs\"");
+  });
+
   test("same name across different plugins is fine", async () => {
     const mvex = await Vex.create({
       plugins: [
@@ -749,6 +768,62 @@ describe("plugin name collisions", () => {
     expect(mvex.listQueries()).toContain("posts.list");
 
     await mvex.close();
+  });
+});
+
+describe("_system.sql", () => {
+  test("requires admin", async () => {
+    await expect(
+      vex.mutate("_system.sql", { sql: "SELECT 1" }),
+    ).rejects.toThrow("admin privileges");
+  });
+
+  test("admin can run raw SELECT", async () => {
+    await vex.mutate("kv.set", { scope: "s", key: "k", value: 7 });
+    const rows = await vex.mutate(
+      "_system.sql",
+      { sql: "SELECT COUNT(*) as n FROM kv" },
+      { user: { id: "admin", name: "Admin", isAdmin: true } },
+    );
+    expect(rows[0].n).toBe(1);
+  });
+
+  test("admin can run DDL (DROP orphan table)", async () => {
+    await vex.mutate(
+      "_system.sql",
+      { sql: "CREATE TABLE orphan (x INTEGER)" },
+      { user: { id: "admin", name: "Admin", isAdmin: true } },
+    );
+    const before = await vex.mutate(
+      "_system.sql",
+      { sql: "SELECT name FROM sqlite_master WHERE name='orphan'" },
+      { user: { id: "admin", name: "Admin", isAdmin: true } },
+    );
+    expect(before).toHaveLength(1);
+
+    await vex.mutate(
+      "_system.sql",
+      { sql: "DROP TABLE orphan" },
+      { user: { id: "admin", name: "Admin", isAdmin: true } },
+    );
+    const after = await vex.mutate(
+      "_system.sql",
+      { sql: "SELECT name FROM sqlite_master WHERE name='orphan'" },
+      { user: { id: "admin", name: "Admin", isAdmin: true } },
+    );
+    expect(after).toHaveLength(0);
+  });
+
+  test("params are bound", async () => {
+    await vex.mutate("kv.set", { scope: "s", key: "a", value: 1 });
+    await vex.mutate("kv.set", { scope: "s", key: "b", value: 2 });
+    const rows = await vex.mutate(
+      "_system.sql",
+      { sql: "SELECT key FROM kv WHERE value = ?", params: [2] },
+      { user: { id: "admin", name: "Admin", isAdmin: true } },
+    );
+    expect(rows).toHaveLength(1);
+    expect(rows[0].key).toBe("b");
   });
 });
 
