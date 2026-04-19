@@ -344,10 +344,25 @@ export class Vex {
     return mode === "analytical" ? this.analytical : this.transactional;
   }
 
+  // Track who registered each table, so collisions can point a finger.
+  // Two plugins registering the same bare table name silently share one
+  // SQL table with merged schemas — inserts that satisfy one plugin's
+  // schema can fail the other's NOT NULL constraints. Prevent the class.
+  private tableOwners: Map<string, string> = new Map();
+
   private async registerPlugin(plugin: PluginDef): Promise<void> {
     if (plugin.middleware) this.middleware.push(...plugin.middleware);
 
     for (const [tableName, schema] of Object.entries(plugin.tables)) {
+      const existingOwner = this.tableOwners.get(tableName);
+      if (existingOwner) {
+        throw new Error(
+          `Duplicate table "${tableName}": already registered by plugin "${existingOwner}", `
+            + `now re-registered by plugin "${plugin.name}". `
+            + `Rename one of them (table names are not namespaced by plugin).`,
+        );
+      }
+      this.tableOwners.set(tableName, plugin.name);
       this.tableStorageMode.set(tableName, schema.storage ?? "transactional");
       await this.storageFor(tableName).ensureTable(tableName, schema);
     }
