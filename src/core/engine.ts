@@ -213,6 +213,25 @@ export class Vex {
       },
     });
 
+    // Admin-only raw SQL escape hatch. Needed for ad-hoc migrations
+    // (rename/drop tables after a plugin refactor) and one-off fixes.
+    // Bypasses the query/mutation surface entirely — no plugin owns it,
+    // no transaction wrapping, no schema validation. Use sparingly.
+    vex.mutations.set("_system.sql", {
+      plugin: "_system",
+      def: {
+        args: { sql: "string", params: "json", analytical: "number" },
+        async handler(ctx: MutationContext, args: Record<string, any>) {
+          if (!ctx.user?.isAdmin) {
+            throw new Error("_system.sql requires admin privileges");
+          }
+          const params = Array.isArray(args.params) ? args.params : [];
+          const target = args.analytical ? vex.analytical : vex.transactional;
+          return target.rawQuery(args.sql, ...params);
+        },
+      },
+    });
+
     // ─── Trace mutations ───
 
     vex.mutations.set("_system.writeSpan", {
