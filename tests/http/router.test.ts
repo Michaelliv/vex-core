@@ -2,15 +2,12 @@ import { describe, expect, test } from "bun:test";
 import {
   createRouter,
   HttpError,
-  Middleware,
+  type Middleware,
 } from "../../src/http/index.js";
 
 describe("router — matching", () => {
   test("GET exact path", async () => {
-    const app = createRouter().get(
-      "/hello",
-      () => new Response("hi"),
-    );
+    const app = createRouter().get("/hello", () => new Response("hi"));
     const res = await app.handle(new Request("http://x/hello"));
     expect(res.status).toBe(200);
     expect(await res.text()).toBe("hi");
@@ -21,26 +18,22 @@ describe("router — matching", () => {
       .get("/p", () => new Response("get"))
       .post("/p", () => new Response("post"));
     const a = await app.handle(new Request("http://x/p"));
-    const b = await app.handle(
-      new Request("http://x/p", { method: "POST" }),
-    );
+    const b = await app.handle(new Request("http://x/p", { method: "POST" }));
     expect(await a.text()).toBe("get");
     expect(await b.text()).toBe("post");
   });
 
   test(":param capture", async () => {
-    const app = createRouter().get(
-      "/users/:id",
-      (ctx) => Response.json({ id: ctx.params.id }),
+    const app = createRouter().get("/users/:id", (ctx) =>
+      Response.json({ id: ctx.params.id }),
     );
     const res = await app.handle(new Request("http://x/users/42"));
     expect(await res.json()).toEqual({ id: "42" });
   });
 
   test("wildcard capture under mount", async () => {
-    const inner = createRouter().all(
-      "/webhook/*",
-      (ctx) => Response.json({ rest: ctx.params["0"] }),
+    const inner = createRouter().all("/webhook/*", (ctx) =>
+      Response.json({ rest: ctx.params["0"] }),
     );
     const app = createRouter().mount("/vex", inner);
     const res = await app.handle(
@@ -106,9 +99,8 @@ describe("router — middleware", () => {
 
 describe("router — mount", () => {
   test("prefix strips before inner dispatch", async () => {
-    const inner = createRouter().get(
-      "/ping",
-      (ctx) => Response.json({ path: ctx.url.pathname }),
+    const inner = createRouter().get("/ping", (ctx) =>
+      Response.json({ path: ctx.url.pathname }),
     );
     const app = createRouter().mount("/api", inner);
     const res = await app.handle(new Request("http://x/api/ping"));
@@ -118,10 +110,7 @@ describe("router — mount", () => {
   });
 
   test("non-matching prefix falls through to 404", async () => {
-    const inner = createRouter().get(
-      "/ping",
-      () => new Response("pong"),
-    );
+    const inner = createRouter().get("/ping", () => new Response("pong"));
     const app = createRouter().mount("/api", inner);
     const res = await app.handle(new Request("http://x/other"));
     expect(res.status).toBe(404);

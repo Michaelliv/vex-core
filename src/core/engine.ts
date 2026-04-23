@@ -397,9 +397,9 @@ export class Vex {
       const existingOwner = this.tableOwners.get(tableName);
       if (existingOwner) {
         throw new Error(
-          `Duplicate table "${tableName}": already registered by plugin "${existingOwner}", `
-            + `now re-registered by plugin "${plugin.name}". `
-            + `Rename one of them (table names are not namespaced by plugin).`,
+          `Duplicate table "${tableName}": already registered by plugin "${existingOwner}", ` +
+            `now re-registered by plugin "${plugin.name}". ` +
+            `Rename one of them (table names are not namespaced by plugin).`,
         );
       }
       this.tableOwners.set(tableName, plugin.name);

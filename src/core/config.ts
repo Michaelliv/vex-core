@@ -56,20 +56,6 @@ export const config = {
     return env("VEX_KEY");
   },
 
-  get spanRetention() {
-    return env("VEX_SPAN_RETENTION") ?? "7d";
-  },
-  get spanRetentionMs() {
-    return parseDuration(this.spanRetention);
-  },
-
-  get eventRetention() {
-    return env("VEX_EVENT_RETENTION") ?? "30d";
-  },
-  get eventRetentionMs() {
-    return parseDuration(this.eventRetention);
-  },
-
   get handlerTimeout() {
     return env("VEX_HANDLER_TIMEOUT") ?? "30s";
   },

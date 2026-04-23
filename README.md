@@ -271,6 +271,20 @@ SSE-backed — data updates automatically on mutations that touch the underlying
 
 Every engine operation is a span. Pass a `tracer` to `Vex.create` to capture queries, mutations, handler timings, tables touched, invalidated subscriptions, and errors. See `src/core/tracer.ts` for the `Tracer` and `Span` interfaces.
 
+Spans are written to the internal `_spans` table. Core does **not** prune it — retention policy is app-specific. For a long-running server, register a cron that deletes old rows:
+
+```ts
+api.registerJob("spanRetention", {
+  schedule: "every 1h",
+  async handler(ctx) {
+    const cutoff = Date.now() - 7 * 24 * 60 * 60 * 1000; // 7 days
+    await ctx.db.table("_spans").where("startTime", "<", cutoff).delete();
+  },
+});
+```
+
+Without this, `_spans` grows unbounded.
+
 ## Exports
 
 | Entry | Contents |

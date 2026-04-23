@@ -1,5 +1,12 @@
-import { describe, test, expect } from "bun:test";
-import { matchPermission, routePermission, sessionCookie, parseCookie, RateLimiter, parseJson } from "../src/core/auth.js";
+import { describe, expect, test } from "bun:test";
+import {
+  matchPermission,
+  parseCookie,
+  parseJson,
+  RateLimiter,
+  routePermission,
+  sessionCookie,
+} from "../src/core/auth.js";
 
 describe("matchPermission", () => {
   test("wildcard * matches everything", () => {
@@ -8,20 +15,32 @@ describe("matchPermission", () => {
   });
 
   test("exact match", () => {
-    expect(matchPermission("query:my-app:todos.list", ["query:my-app:todos.list"])).toBe(true);
-    expect(matchPermission("query:my-app:todos.list", ["query:my-app:todos.add"])).toBe(false);
+    expect(
+      matchPermission("query:my-app:todos.list", ["query:my-app:todos.list"]),
+    ).toBe(true);
+    expect(
+      matchPermission("query:my-app:todos.list", ["query:my-app:todos.add"]),
+    ).toBe(false);
   });
 
   test("wildcard at scope level", () => {
     expect(matchPermission("query:my-app:todos.list", ["query:*"])).toBe(true);
-    expect(matchPermission("query:other-app:todos.list", ["query:*"])).toBe(true);
+    expect(matchPermission("query:other-app:todos.list", ["query:*"])).toBe(
+      true,
+    );
     expect(matchPermission("mutate:my-app:todos.add", ["query:*"])).toBe(false);
   });
 
   test("wildcard at target level", () => {
-    expect(matchPermission("query:my-app:todos.list", ["query:my-app:*"])).toBe(true);
-    expect(matchPermission("query:my-app:todos.add", ["query:my-app:*"])).toBe(true);
-    expect(matchPermission("query:other-app:todos.list", ["query:my-app:*"])).toBe(false);
+    expect(matchPermission("query:my-app:todos.list", ["query:my-app:*"])).toBe(
+      true,
+    );
+    expect(matchPermission("query:my-app:todos.add", ["query:my-app:*"])).toBe(
+      true,
+    );
+    expect(
+      matchPermission("query:other-app:todos.list", ["query:my-app:*"]),
+    ).toBe(false);
   });
 
   test("multiple permissions", () => {
@@ -56,13 +75,19 @@ describe("routePermission", () => {
   });
 
   test("deploy routes", () => {
-    expect(routePermission("POST", "/a/my-app/files/bulk")).toBe("deploy:my-app");
+    expect(routePermission("POST", "/a/my-app/files/bulk")).toBe(
+      "deploy:my-app",
+    );
     expect(routePermission("POST", "/a/my-app/boot")).toBe("deploy:my-app");
   });
 
   test("query/mutate with operation name", () => {
-    expect(routePermission("POST", "/a/my-app/query", { name: "todos.list" })).toBe("query:my-app:todos.list");
-    expect(routePermission("POST", "/a/my-app/mutate", { name: "todos.add" })).toBe("mutate:my-app:todos.add");
+    expect(
+      routePermission("POST", "/a/my-app/query", { name: "todos.list" }),
+    ).toBe("query:my-app:todos.list");
+    expect(
+      routePermission("POST", "/a/my-app/mutate", { name: "todos.add" }),
+    ).toBe("mutate:my-app:todos.add");
   });
 
   test("query/mutate without body defaults to *", () => {
@@ -76,7 +101,9 @@ describe("routePermission", () => {
 
   test("introspection", () => {
     expect(routePermission("GET", "/a/my-app/info")).toBe("query:my-app:_info");
-    expect(routePermission("GET", "/a/my-app/tables")).toBe("query:my-app:_tables");
+    expect(routePermission("GET", "/a/my-app/tables")).toBe(
+      "query:my-app:_tables",
+    );
   });
 
   test("unknown routes require auth", () => {
@@ -98,8 +125,12 @@ describe("cookie helpers", () => {
   });
 
   test("parseCookie extracts value", () => {
-    expect(parseCookie("vex_session=abc123; other=xyz", "vex_session")).toBe("abc123");
-    expect(parseCookie("other=xyz; vex_session=abc123", "vex_session")).toBe("abc123");
+    expect(parseCookie("vex_session=abc123; other=xyz", "vex_session")).toBe(
+      "abc123",
+    );
+    expect(parseCookie("other=xyz; vex_session=abc123", "vex_session")).toBe(
+      "abc123",
+    );
     expect(parseCookie("other=xyz", "vex_session")).toBeNull();
   });
 });

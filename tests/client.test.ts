@@ -2,11 +2,7 @@ import { afterAll, beforeAll, describe, expect, test } from "bun:test";
 import type { Server } from "bun";
 import { sqliteAdapter } from "../src/adapters/sqlite.js";
 import { Vex } from "../src/core/engine.js";
-import {
-  cors,
-  createRouter,
-  vexHandler,
-} from "../src/http/index.js";
+import { cors, createRouter, vexHandler } from "../src/http/index.js";
 
 let vex: Vex;
 let server: Server;

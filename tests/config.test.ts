@@ -1,10 +1,6 @@
-import { afterEach, beforeEach, describe, expect, test } from "bun:test";
-import { writeFileSync, mkdtempSync, rmSync } from "node:fs";
-import { join } from "node:path";
-import { tmpdir } from "node:os";
+import { afterEach, describe, expect, test } from "bun:test";
 
 // parseDuration is not exported, so we test it through the config module indirectly.
-// We'll also test the .env loading behavior.
 
 describe("config", () => {
   const saved: Record<string, string | undefined> = {};
@@ -30,21 +26,6 @@ describe("config", () => {
     setEnv("VEX_KEY", undefined);
   });
 
-  test("spanRetention defaults to 7d", async () => {
-    setEnv("VEX_SPAN_RETENTION", undefined);
-    const { config } = await import("../src/core/config.js");
-    expect(config.spanRetention).toBe("7d");
-    expect(config.spanRetentionMs).toBe(7 * 24 * 60 * 60 * 1000);
-  });
-
-  test("spanRetention parses custom value", async () => {
-    setEnv("VEX_SPAN_RETENTION", "3d");
-    const { config } = await import("../src/core/config.js");
-    expect(config.spanRetention).toBe("3d");
-    expect(config.spanRetentionMs).toBe(3 * 24 * 60 * 60 * 1000);
-    setEnv("VEX_SPAN_RETENTION", undefined);
-  });
-
   test("handlerTimeout parses seconds", async () => {
     setEnv("VEX_HANDLER_TIMEOUT", "10s");
     const { config } = await import("../src/core/config.js");
@@ -67,10 +48,10 @@ describe("config", () => {
   });
 
   test("invalid duration throws", async () => {
-    setEnv("VEX_SPAN_RETENTION", "abc");
+    setEnv("VEX_HANDLER_TIMEOUT", "abc");
     const { config } = await import("../src/core/config.js");
-    expect(() => config.spanRetentionMs).toThrow("Invalid duration");
-    setEnv("VEX_SPAN_RETENTION", undefined);
+    expect(() => config.handlerTimeoutMs).toThrow("Invalid duration");
+    setEnv("VEX_HANDLER_TIMEOUT", undefined);
   });
 
   test("traceSampleRate defaults to 1.0", async () => {

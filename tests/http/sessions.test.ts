@@ -6,7 +6,10 @@ function extractSetCookie(res: Response): string | null {
   return res.headers.get("set-cookie");
 }
 
-function extractCookieValue(setCookie: string | null, name: string): string | null {
+function extractCookieValue(
+  setCookie: string | null,
+  name: string,
+): string | null {
   if (!setCookie) return null;
   const m = setCookie.match(new RegExp(`${name}=([^;]+)`));
   return m ? decodeURIComponent(m[1]) : null;
@@ -48,8 +51,7 @@ describe("sessions", () => {
     expect(row).not.toBeNull();
     // The sqlite adapter auto-parses `json` columns; older adapters
     // may return a string. Accept either to keep this test portable.
-    const data =
-      typeof row.data === "string" ? JSON.parse(row.data) : row.data;
+    const data = typeof row.data === "string" ? JSON.parse(row.data) : row.data;
     expect(data).toEqual({ user: "alice" });
   });
 

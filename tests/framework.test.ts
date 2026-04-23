@@ -1,21 +1,19 @@
-import { describe, test, expect, beforeEach, afterEach } from "bun:test";
-import { mkdirSync, writeFileSync, rmSync } from "node:fs";
+import { afterEach, beforeEach, describe, expect, test } from "bun:test";
+import { mkdirSync, rmSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
 import {
-  table,
-  query,
-  mutation,
-  webhook,
-  job,
-  middleware,
-} from "../src/framework/define.js";
-import {
-  isTable,
-  isQuery,
-  isMutation,
-  isWebhook,
   isJob,
   isMiddleware,
+  isMutation,
+  isQuery,
+  isTable,
+  isWebhook,
+  job,
+  middleware,
+  mutation,
+  query,
+  table,
+  webhook,
 } from "../src/framework/define.js";
 import { scanDirectory } from "../src/framework/scanner.js";
 
@@ -39,7 +37,11 @@ describe("define", () => {
 
   test("table() with column options", () => {
     const t = table({ email: { type: "string", index: true, optional: true } });
-    expect(t.columns.email).toEqual({ type: "string", index: true, optional: true });
+    expect(t.columns.email).toEqual({
+      type: "string",
+      index: true,
+      optional: true,
+    });
   });
 
   test("query() returns tagged query", () => {
@@ -214,13 +216,18 @@ describe("scanner", () => {
   });
 
   test("skips files with no vex exports", async () => {
-    writeFile("utils.ts", `export function add(a: number, b: number) { return a + b; }`);
+    writeFile(
+      "utils.ts",
+      `export function add(a: number, b: number) { return a + b; }`,
+    );
     const result = await scanDirectory(TMP);
     expect(result.plugins).toHaveLength(0);
   });
 
   test("throws on missing directory", async () => {
-    expect(scanDirectory("/tmp/does-not-exist-vex")).rejects.toThrow("Directory not found");
+    expect(scanDirectory("/tmp/does-not-exist-vex")).rejects.toThrow(
+      "Directory not found",
+    );
   });
 
   test("webhooks and jobs get scanned", async () => {

@@ -1,8 +1,12 @@
 import { afterEach, beforeEach, describe, expect, test } from "bun:test";
+import { sqliteAdapter } from "../src/adapters/sqlite.js";
 import type { VexPluginAPI } from "../src/core/api.js";
 import { Vex } from "../src/core/engine.js";
-import type { MiddlewareInfo, MutationContext, QueryContext } from "../src/core/types.js";
-import { sqliteAdapter } from "../src/adapters/sqlite.js";
+import type {
+  MiddlewareInfo,
+  MutationContext,
+  QueryContext,
+} from "../src/core/types.js";
 
 // Inline KV plugin for testing (replaces app-specific plugin imports)
 function kvPlugin(api: VexPluginAPI) {
@@ -18,14 +22,21 @@ function kvPlugin(api: VexPluginAPI) {
   api.registerQuery("get", {
     args: { scope: "string", key: "string" },
     async handler(ctx, args) {
-      const row = await ctx.db.table("kv").where("scope", "=", args.scope).where("key", "=", args.key).first<{ value: any }>();
+      const row = await ctx.db
+        .table("kv")
+        .where("scope", "=", args.scope)
+        .where("key", "=", args.key)
+        .first<{ value: any }>();
       return row?.value ?? null;
     },
   });
   api.registerQuery("getAll", {
     args: { scope: "string" },
     async handler(ctx, args) {
-      const rows = await ctx.db.table("kv").where("scope", "=", args.scope).all<{ key: string; value: any }>();
+      const rows = await ctx.db
+        .table("kv")
+        .where("scope", "=", args.scope)
+        .all<{ key: string; value: any }>();
       const result: Record<string, any> = {};
       for (const r of rows) result[r.key] = r.value;
       return result;
@@ -34,13 +45,19 @@ function kvPlugin(api: VexPluginAPI) {
   api.registerMutation("set", {
     args: { scope: "string", key: "string", value: "any" },
     async handler(ctx, args) {
-      await ctx.db.table("kv").upsert({ scope: args.scope, key: args.key }, { value: args.value });
+      await ctx.db
+        .table("kv")
+        .upsert({ scope: args.scope, key: args.key }, { value: args.value });
     },
   });
   api.registerMutation("delete", {
     args: { scope: "string", key: "string" },
     async handler(ctx, args) {
-      const row = await ctx.db.table("kv").where("scope", "=", args.scope).where("key", "=", args.key).first<{ _id: string }>();
+      const row = await ctx.db
+        .table("kv")
+        .where("scope", "=", args.scope)
+        .where("key", "=", args.key)
+        .first<{ _id: string }>();
       if (row) await ctx.db.table("kv").delete(row._id);
     },
   });
@@ -109,9 +126,13 @@ describe("kv plugin", () => {
 describe("subscriptions", () => {
   test("subscribe fires on mutation", async () => {
     const results: any[] = [];
-    const unsub = await vex.subscribe("kv.get", { scope: "s1", key: "x" }, (data) => {
-      results.push(data);
-    });
+    const unsub = await vex.subscribe(
+      "kv.get",
+      { scope: "s1", key: "x" },
+      (data) => {
+        results.push(data);
+      },
+    );
 
     expect(results).toEqual([null]);
 
@@ -175,9 +196,21 @@ describe("mutation context chaining", () => {
       ],
     });
 
-    await cvex.mutate("t.add", { category: "a", status: "active", name: "one" });
-    await cvex.mutate("t.add", { category: "a", status: "inactive", name: "two" });
-    await cvex.mutate("t.add", { category: "b", status: "active", name: "three" });
+    await cvex.mutate("t.add", {
+      category: "a",
+      status: "active",
+      name: "one",
+    });
+    await cvex.mutate("t.add", {
+      category: "a",
+      status: "inactive",
+      name: "two",
+    });
+    await cvex.mutate("t.add", {
+      category: "b",
+      status: "active",
+      name: "three",
+    });
 
     const deleted = await cvex.mutate("t.findAndDelete", {
       category: "a",
@@ -210,7 +243,9 @@ describe("custom plugin", () => {
           api.registerMutation("add", {
             args: { text: "string" },
             async handler(ctx, args) {
-              return ctx.db.table("todos").insert({ text: args.text, done: false });
+              return ctx.db
+                .table("todos")
+                .insert({ text: args.text, done: false });
             },
           });
           api.registerQuery("list", {
@@ -266,7 +301,10 @@ describe("analytical storage", () => {
           api.registerQuery("count", {
             args: { type: "string" },
             async handler(ctx, args) {
-              return ctx.db.table("events").where("type", "=", args.type).count();
+              return ctx.db
+                .table("events")
+                .where("type", "=", args.type)
+                .count();
             },
           });
           api.registerQuery("all", {
@@ -282,8 +320,14 @@ describe("analytical storage", () => {
     await dualVex.mutate("kv.set", { scope: "s1", key: "x", value: 1 });
     expect(await dualVex.query("kv.get", { scope: "s1", key: "x" })).toBe(1);
 
-    await dualVex.mutate("analytics.track", { type: "click", data: { page: "/home" } });
-    await dualVex.mutate("analytics.track", { type: "click", data: { page: "/about" } });
+    await dualVex.mutate("analytics.track", {
+      type: "click",
+      data: { page: "/home" },
+    });
+    await dualVex.mutate("analytics.track", {
+      type: "click",
+      data: { page: "/about" },
+    });
     await dualVex.mutate("analytics.track", { type: "signup" });
 
     expect(await dualVex.query("analytics.count", { type: "click" })).toBe(2);
@@ -321,7 +365,9 @@ describe("analytical storage", () => {
           api.registerMutation("record", {
             args: { name: "string", value: "number" },
             async handler(ctx, args) {
-              await ctx.db.table("metrics").insert({ name: args.name, value: args.value });
+              await ctx.db
+                .table("metrics")
+                .insert({ name: args.name, value: args.value });
             },
           });
         },
@@ -642,7 +688,8 @@ describe("middleware", () => {
             handler: async (ctx) => ctx.db.table("items").all(),
           });
           api.use((ctx, info, next) => {
-            contextHasInsert = typeof (ctx.db.table("items") as any).insert === "function";
+            contextHasInsert =
+              typeof (ctx.db.table("items") as any).insert === "function";
             return next();
           });
         },
@@ -667,10 +714,12 @@ describe("middleware", () => {
           api.registerTable("items", { columns: { name: { type: "string" } } });
           api.registerMutation("add", {
             args: { name: "string" },
-            handler: async (ctx, args) => ctx.db.table("items").insert({ name: args.name }),
+            handler: async (ctx, args) =>
+              ctx.db.table("items").insert({ name: args.name }),
           });
           api.use((ctx, info, next) => {
-            contextHasInsert = typeof (ctx.db.table("items") as any).insert === "function";
+            contextHasInsert =
+              typeof (ctx.db.table("items") as any).insert === "function";
             return next();
           });
         },
@@ -693,12 +742,20 @@ describe("plugin name collisions", () => {
         plugins: [
           (api: VexPluginAPI) => {
             api.setName("items");
-            api.registerTable("items", { columns: { name: { type: "string" } } });
-            api.registerQuery("list", { args: {}, handler: async (ctx) => ctx.db.table("items").all() });
+            api.registerTable("items", {
+              columns: { name: { type: "string" } },
+            });
+            api.registerQuery("list", {
+              args: {},
+              handler: async (ctx) => ctx.db.table("items").all(),
+            });
           },
           (api: VexPluginAPI) => {
             api.setName("items");
-            api.registerQuery("list", { args: {}, handler: async (ctx) => ctx.db.table("items").all() });
+            api.registerQuery("list", {
+              args: {},
+              handler: async (ctx) => ctx.db.table("items").all(),
+            });
           },
         ],
         transactional: sqliteAdapter(":memory:"),
@@ -713,12 +770,22 @@ describe("plugin name collisions", () => {
         plugins: [
           (api: VexPluginAPI) => {
             api.setName("items");
-            api.registerTable("items", { columns: { name: { type: "string" } } });
-            api.registerMutation("add", { args: { name: "string" }, handler: async (ctx, args) => ctx.db.table("items").insert({ name: args.name }) });
+            api.registerTable("items", {
+              columns: { name: { type: "string" } },
+            });
+            api.registerMutation("add", {
+              args: { name: "string" },
+              handler: async (ctx, args) =>
+                ctx.db.table("items").insert({ name: args.name }),
+            });
           },
           (api: VexPluginAPI) => {
             api.setName("items");
-            api.registerMutation("add", { args: { name: "string" }, handler: async (ctx, args) => ctx.db.table("items").insert({ name: args.name }) });
+            api.registerMutation("add", {
+              args: { name: "string" },
+              handler: async (ctx, args) =>
+                ctx.db.table("items").insert({ name: args.name }),
+            });
           },
         ],
         transactional: sqliteAdapter(":memory:"),
@@ -733,17 +800,21 @@ describe("plugin name collisions", () => {
         plugins: [
           (api: VexPluginAPI) => {
             api.setName("a");
-            api.registerTable("runs", { columns: { name: { type: "string" } } });
+            api.registerTable("runs", {
+              columns: { name: { type: "string" } },
+            });
           },
           (api: VexPluginAPI) => {
             api.setName("b");
-            api.registerTable("runs", { columns: { other: { type: "string" } } });
+            api.registerTable("runs", {
+              columns: { other: { type: "string" } },
+            });
           },
         ],
         transactional: sqliteAdapter(":memory:"),
         analytical: sqliteAdapter(":memory:"),
       }),
-    ).rejects.toThrow("Duplicate table \"runs\"");
+    ).rejects.toThrow('Duplicate table "runs"');
   });
 
   test("same name across different plugins is fine", async () => {
@@ -752,12 +823,20 @@ describe("plugin name collisions", () => {
         (api: VexPluginAPI) => {
           api.setName("users");
           api.registerTable("users", { columns: { name: { type: "string" } } });
-          api.registerQuery("list", { args: {}, handler: async (ctx) => ctx.db.table("users").all() });
+          api.registerQuery("list", {
+            args: {},
+            handler: async (ctx) => ctx.db.table("users").all(),
+          });
         },
         (api: VexPluginAPI) => {
           api.setName("posts");
-          api.registerTable("posts", { columns: { title: { type: "string" } } });
-          api.registerQuery("list", { args: {}, handler: async (ctx) => ctx.db.table("posts").all() });
+          api.registerTable("posts", {
+            columns: { title: { type: "string" } },
+          });
+          api.registerQuery("list", {
+            args: {},
+            handler: async (ctx) => ctx.db.table("posts").all(),
+          });
         },
       ],
       transactional: sqliteAdapter(":memory:"),
@@ -836,7 +915,7 @@ describe("handler timeout", () => {
           api.registerQuery("hang", {
             args: {},
             async handler() {
-              await new Promise(r => setTimeout(r, 500));
+              await new Promise((r) => setTimeout(r, 500));
               return "done";
             },
           });
@@ -847,7 +926,9 @@ describe("handler timeout", () => {
       handlerTimeoutMs: 50,
     });
 
-    await expect(tvex.query("slow.hang")).rejects.toThrow("Handler timed out after 50ms");
+    await expect(tvex.query("slow.hang")).rejects.toThrow(
+      "Handler timed out after 50ms",
+    );
     await tvex.close();
   });
 
@@ -858,7 +939,9 @@ describe("handler timeout", () => {
           api.setName("fast");
           api.registerQuery("quick", {
             args: {},
-            async handler() { return "ok"; },
+            async handler() {
+              return "ok";
+            },
           });
         },
       ],

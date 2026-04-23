@@ -1,7 +1,16 @@
-import { describe, test, expect, beforeEach, afterEach, setDefaultTimeout } from "bun:test";
+import {
+  afterEach,
+  beforeEach,
+  describe,
+  expect,
+  setDefaultTimeout,
+  test,
+} from "bun:test";
+
 setDefaultTimeout(15_000);
-import { sqliteAdapter } from "../src/adapters/sqlite.js";
+
 import { duckdbAdapter } from "../src/adapters/duckdb.js";
+import { sqliteAdapter } from "../src/adapters/sqlite.js";
 import type { StorageAdapter } from "../src/core/storage.js";
 import type { TableSchema } from "../src/core/types.js";
 
@@ -51,14 +60,26 @@ function adapterSuite(name: string, create: () => Promise<StorageAdapter>) {
     });
 
     test("insert with custom _id", async () => {
-      const id = await adapter.insert("users", { _id: "custom-1", name: "bob", age: 25 });
+      const id = await adapter.insert("users", {
+        _id: "custom-1",
+        name: "bob",
+        age: 25,
+      });
       expect(id).toBe("custom-1");
-      const row = await adapter.query("users").where("_id", "=", "custom-1").first<any>();
+      const row = await adapter
+        .query("users")
+        .where("_id", "=", "custom-1")
+        .first<any>();
       expect(row.name).toBe("bob");
     });
 
     test("insert with boolean and json", async () => {
-      await adapter.insert("users", { name: "carol", age: 28, active: true, meta: { role: "admin" } });
+      await adapter.insert("users", {
+        name: "carol",
+        age: 28,
+        active: true,
+        meta: { role: "admin" },
+      });
       const row = await adapter.query("users").first<any>();
       expect(row.active).toBe(true);
       expect(row.meta).toEqual({ role: "admin" });
@@ -71,11 +92,17 @@ function adapterSuite(name: string, create: () => Promise<StorageAdapter>) {
       await adapter.insert("users", { name: "bob", age: 25 });
       await adapter.insert("users", { name: "carol", age: 35 });
 
-      const young = await adapter.query("users").where("age", "<", 30).all<any>();
+      const young = await adapter
+        .query("users")
+        .where("age", "<", 30)
+        .all<any>();
       expect(young).toHaveLength(1);
       expect(young[0].name).toBe("bob");
 
-      const old = await adapter.query("users").where("age", ">=", 30).all<any>();
+      const old = await adapter
+        .query("users")
+        .where("age", ">=", 30)
+        .all<any>();
       expect(old).toHaveLength(2);
     });
 
@@ -84,7 +111,10 @@ function adapterSuite(name: string, create: () => Promise<StorageAdapter>) {
       await adapter.insert("users", { name: "bob", age: 25 });
       await adapter.insert("users", { name: "carol", age: 35 });
 
-      const result = await adapter.query("users").where("name", "IN", ["alice", "carol"]).all<any>();
+      const result = await adapter
+        .query("users")
+        .where("name", "IN", ["alice", "carol"])
+        .all<any>();
       expect(result).toHaveLength(2);
     });
 
@@ -92,7 +122,11 @@ function adapterSuite(name: string, create: () => Promise<StorageAdapter>) {
       await adapter.insert("users", { name: "alice", age: 30, active: true });
       await adapter.insert("users", { name: "bob", age: 30, active: false });
 
-      const result = await adapter.query("users").where("age", "=", 30).where("active", "=", 1).all<any>();
+      const result = await adapter
+        .query("users")
+        .where("age", "=", 30)
+        .where("active", "=", 1)
+        .all<any>();
       expect(result).toHaveLength(1);
       expect(result[0].name).toBe("alice");
     });
@@ -114,11 +148,20 @@ function adapterSuite(name: string, create: () => Promise<StorageAdapter>) {
         await adapter.insert("users", { name: `user-${i}`, age: i });
       }
 
-      const page1 = await adapter.query("users").order("age").limit(3).all<any>();
+      const page1 = await adapter
+        .query("users")
+        .order("age")
+        .limit(3)
+        .all<any>();
       expect(page1).toHaveLength(3);
       expect(page1[0].age).toBe(0);
 
-      const page2 = await adapter.query("users").order("age").limit(3).offset(3).all<any>();
+      const page2 = await adapter
+        .query("users")
+        .order("age")
+        .limit(3)
+        .offset(3)
+        .all<any>();
       expect(page2).toHaveLength(3);
       expect(page2[0].age).toBe(3);
     });
@@ -133,7 +176,9 @@ function adapterSuite(name: string, create: () => Promise<StorageAdapter>) {
       await adapter.insert("users", { name: "bob", age: 25 });
 
       expect(await adapter.query("users").count()).toBe(2);
-      expect(await adapter.query("users").where("age", ">", 28).count()).toBe(1);
+      expect(await adapter.query("users").where("age", ">", 28).count()).toBe(
+        1,
+      );
     });
 
     test("query builder delete with filters", async () => {
@@ -154,7 +199,10 @@ function adapterSuite(name: string, create: () => Promise<StorageAdapter>) {
       const id = await adapter.insert("users", { name: "alice", age: 30 });
       await adapter.update("users", id, { age: 31 });
 
-      const row = await adapter.query("users").where("_id", "=", id).first<any>();
+      const row = await adapter
+        .query("users")
+        .where("_id", "=", id)
+        .first<any>();
       expect(row.age).toBe(31);
       expect(row.name).toBe("alice");
     });
@@ -179,7 +227,10 @@ function adapterSuite(name: string, create: () => Promise<StorageAdapter>) {
 
     test("upsert inserts when missing", async () => {
       await adapter.upsert("users", { name: "alice" }, { age: 30 });
-      const row = await adapter.query("users").where("name", "=", "alice").first<any>();
+      const row = await adapter
+        .query("users")
+        .where("name", "=", "alice")
+        .first<any>();
       expect(row).not.toBeNull();
       expect(row.age).toBe(30);
     });
@@ -188,7 +239,10 @@ function adapterSuite(name: string, create: () => Promise<StorageAdapter>) {
       await adapter.insert("users", { name: "alice", age: 30 });
       await adapter.upsert("users", { name: "alice" }, { age: 31 });
 
-      const rows = await adapter.query("users").where("name", "=", "alice").all<any>();
+      const rows = await adapter
+        .query("users")
+        .where("name", "=", "alice")
+        .all<any>();
       expect(rows).toHaveLength(1);
       expect(rows[0].age).toBe(31);
     });
@@ -258,7 +312,10 @@ function adapterSuite(name: string, create: () => Promise<StorageAdapter>) {
     // --- bulkInsert ---
 
     test("bulkInsert inserts all rows", async () => {
-      const rows = Array.from({ length: 100 }, (_, i) => ({ name: `user-${i}`, age: i }));
+      const rows = Array.from({ length: 100 }, (_, i) => ({
+        name: `user-${i}`,
+        age: i,
+      }));
       await adapter.bulkInsert("users", rows);
       expect(await adapter.query("users").count()).toBe(100);
     });
@@ -268,7 +325,9 @@ function adapterSuite(name: string, create: () => Promise<StorageAdapter>) {
         { name: "alice", age: 30 },
         { name: "bob", age: 25 },
       ]);
-      const ids = (await adapter.query("users").all<any>()).map((r: any) => r._id);
+      const ids = (await adapter.query("users").all<any>()).map(
+        (r: any) => r._id,
+      );
       expect(ids[0]).not.toBe(ids[1]);
     });
 
@@ -307,7 +366,10 @@ function adapterSuite(name: string, create: () => Promise<StorageAdapter>) {
     test("ensureTable with indexes", async () => {
       await adapter.ensureTable("items", indexedSchema);
       await adapter.insert("items", { category: "a", value: 1 });
-      const row = await adapter.query("items").where("category", "=", "a").first<any>();
+      const row = await adapter
+        .query("items")
+        .where("category", "=", "a")
+        .first<any>();
       expect(row.value).toBe(1);
     });
   });
