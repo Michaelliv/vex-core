@@ -103,8 +103,18 @@ export class VexClient {
       onError,
     };
     this.subscriptions.set(id, sub);
-    this.send({ type: "subscribe", id, name, args });
-    this.ensureConnected();
+    // Subscribe frames are NOT buffered through `pendingSends`.
+    // The `open` handler iterates `subscriptions` and sends a
+    // fresh subscribe frame for every active sub on connect (and
+    // re-connect). If we also pushed to `pendingSends` here, the
+    // open path would deliver each subscribe twice and the server
+    // would reject the duplicate id. So: send immediately if the
+    // socket is open, otherwise let `open` handle it.
+    if (this.state === "open" && this.socket) {
+      this.rawSend({ type: "subscribe", id, name, args });
+    } else {
+      this.ensureConnected();
+    }
     return () => this.unsubscribe(id);
   }
 
