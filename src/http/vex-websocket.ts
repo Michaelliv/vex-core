@@ -59,14 +59,26 @@ import type { VexUser } from "../core/types.js";
 // generic to `unknown` for the upgrade entrypoint.
 type Server = BunServer<unknown>;
 
-/** Per-connection state Bun pins to `ws.data`. */
-interface ConnectionState {
+/**
+ * Per-connection state Bun pins to `ws.data`. Exported because it
+ * appears in the public `VexWebSocketHandlers` shape — hosts that
+ * declare `Bun.serve({ websocket })` with an explicit return type
+ * need to be able to name it.
+ */
+export interface VexWebSocketConnectionState {
   user: VexUser | null;
   /** id → unsubscribe(). Drained on close. */
   subs: Map<string, () => void>;
 }
 
-type VexWebSocket = ServerWebSocket<ConnectionState>;
+/** Convenience alias for the typed `ServerWebSocket` Bun hands us. */
+export type VexWebSocketConnection =
+  ServerWebSocket<VexWebSocketConnectionState>;
+
+// Internal short alias — keeps the implementation readable without
+// repeating the long type name on every helper signature.
+type VexWebSocket = VexWebSocketConnection;
+type ConnectionState = VexWebSocketConnectionState;
 
 export interface VexWebSocketOptions {
   /**

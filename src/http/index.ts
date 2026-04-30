@@ -36,6 +36,8 @@ export type { VexHandlerOptions } from "./vex-handler.js";
 // Vex HTTP RPC dispatcher (Router you can mount anywhere)
 export { vexHandler } from "./vex-handler.js";
 export type {
+  VexWebSocketConnection,
+  VexWebSocketConnectionState,
   VexWebSocketHandlers,
   VexWebSocketOptions,
 } from "./vex-websocket.js";
