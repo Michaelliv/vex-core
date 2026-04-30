@@ -2,11 +2,7 @@ import { afterEach, beforeEach, describe, expect, test } from "bun:test";
 import { sqliteAdapter } from "../src/adapters/sqlite.js";
 import type { VexPluginAPI } from "../src/core/api.js";
 import { Vex } from "../src/core/engine.js";
-import type {
-  MiddlewareInfo,
-  MutationContext,
-  QueryContext,
-} from "../src/core/types.js";
+import type { MiddlewareInfo, MutationContext } from "../src/core/types.js";
 
 // Inline KV plugin for testing (replaces app-specific plugin imports)
 function kvPlugin(api: VexPluginAPI) {
@@ -687,7 +683,7 @@ describe("middleware", () => {
             args: {},
             handler: async (ctx) => ctx.db.table("items").all(),
           });
-          api.use((ctx, info, next) => {
+          api.use((ctx, _info, next) => {
             contextHasInsert =
               typeof (ctx.db.table("items") as any).insert === "function";
             return next();
@@ -717,7 +713,7 @@ describe("middleware", () => {
             handler: async (ctx, args) =>
               ctx.db.table("items").insert({ name: args.name }),
           });
-          api.use((ctx, info, next) => {
+          api.use((ctx, _info, next) => {
             contextHasInsert =
               typeof (ctx.db.table("items") as any).insert === "function";
             return next();

@@ -7,48 +7,49 @@ export interface UseQueryResult<T> {
   isLoading: boolean;
 }
 
-export function useQuery<T = any>(
+/**
+ * Subscribe to a live query. The component re-renders on every
+ * server-pushed update. Cleanup unsubscribes — no leaked engine-side
+ * subscription, no duplicate frames after re-mount.
+ *
+ * Don't be misled by the `useQuery` name — this is a *subscription*.
+ * For a one-shot read with no live updates, call `client.query()`
+ * directly via `useVex().client`.
+ */
+export function useQuery<T = unknown>(
   queryName: string,
-  args: Record<string, any> = {},
+  args: Record<string, unknown> = {},
 ): UseQueryResult<T> {
-  const { basePath } = useVex();
+  const { client } = useVex();
   const [data, setData] = useState<T | undefined>(undefined);
   const [error, setError] = useState<Error | null>(null);
   const [isLoading, setIsLoading] = useState(true);
+
+  // Stringify once so the dep array compares by content, not by
+  // object identity — `args = {}` from a parent rerender otherwise
+  // looks like a fresh subscription every render.
   const argsKey = JSON.stringify(args);
 
   useEffect(() => {
-    let active = true;
     setIsLoading(true);
     setError(null);
+    setData(undefined);
 
-    const params = new URLSearchParams({ name: queryName, args: argsKey });
-    const es = new EventSource(`${basePath}/subscribe?${params}`);
-
-    es.onmessage = (event) => {
-      if (!active) return;
-      try {
-        setData(JSON.parse(event.data));
+    const off = client.subscribe<T>(
+      queryName,
+      JSON.parse(argsKey),
+      (next) => {
+        setData(next);
         setError(null);
         setIsLoading(false);
-      } catch (_e: any) {
-        setError(new Error("Failed to parse server data"));
-      }
-    };
-
-    es.onerror = () => {
-      if (!active) return;
-      if (es.readyState === EventSource.CLOSED) {
-        setError(new Error("Connection closed"));
+      },
+      (err) => {
+        setError(err);
         setIsLoading(false);
-      }
-    };
-
-    return () => {
-      active = false;
-      es.close();
-    };
-  }, [basePath, queryName, argsKey]);
+      },
+    );
+    return off;
+  }, [client, queryName, argsKey]);
 
   return { data, error, isLoading };
 }

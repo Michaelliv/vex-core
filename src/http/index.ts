@@ -33,5 +33,11 @@ export type {
   Session,
 } from "./types.js";
 export type { VexHandlerOptions } from "./vex-handler.js";
-// Vex dispatcher (Router you can mount anywhere)
+// Vex HTTP RPC dispatcher (Router you can mount anywhere)
 export { vexHandler } from "./vex-handler.js";
+export type {
+  VexWebSocketHandlers,
+  VexWebSocketOptions,
+} from "./vex-websocket.js";
+// Vex live channel (multiplexed subscribe + RPC over one WebSocket)
+export { vexWebSocket } from "./vex-websocket.js";

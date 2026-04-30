@@ -24,7 +24,6 @@ export function errorBoundary(options: ErrorBoundaryOptions = {}): Middleware {
   const logger =
     options.logger ??
     ((err: unknown) => {
-      // biome-ignore lint/suspicious/noConsole: last-resort error log
       console.error("[error]", err);
     });
 

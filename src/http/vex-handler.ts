@@ -1,11 +1,24 @@
 /**
  * vexHandler — the vex engine adapted as a Router.
  *
- * Exposes four routes relative to wherever it's mounted:
- *   POST /query       JSON body { name, args? } → { data } | { error }
- *   POST /mutate      JSON body { name, args? } → { data } | { error }
- *   GET  /subscribe?name&args   SSE stream, one event per update
- *   ALL  /webhook/*             → vex.handleWebhook
+ * Exposes three routes relative to wherever it's mounted:
+ *   POST /query      JSON body { name, args? } → { data } | { error }
+ *   POST /mutate     JSON body { name, args? } → { data } | { error }
+ *   ALL  /webhook/*  → vex.handleWebhook
+ *
+ * Reactive reads (the "live state" surface) are handled by
+ * `vexWebSocket` over a WebSocket at whatever path the host wires
+ * up — typically `/subscribe`. One connection per client multiplexes
+ * many subscriptions plus one-shot query/mutate calls; see
+ * `vex-websocket.ts` for the wire protocol.
+ *
+ * Why split HTTP and WS into two factories
+ *   The Bun.serve API requires a `Server` reference to perform a
+ *   WebSocket upgrade, and the Router abstraction here only sees
+ *   `Request`. So vex-core ships HTTP one-shot RPC as a Router
+ *   (mountable anywhere) and the live channel as a separate
+ *   collection of `(upgrade, open, message, close)` hooks the host
+ *   plumbs into Bun.serve directly.
  *
  * No CORS headers, no auth — those are separate middleware the caller
  * composes on top. This file is the dispatcher only.
@@ -32,7 +45,6 @@ export function vexHandler(vex: Vex, opts: VexHandlerOptions = {}): Router {
 
   router.post("/query", makeQueryHandler(vex, getUser));
   router.post("/mutate", makeMutateHandler(vex, getUser));
-  router.get("/subscribe", makeSubscribeHandler(vex, getUser));
   router.all("/webhook/*", makeWebhookHandler(vex));
 
   return router;
@@ -77,75 +89,6 @@ function makeMutateHandler(
     } catch (err: unknown) {
       return json({ error: errorMessage(err) }, 500);
     }
-  };
-}
-
-function makeSubscribeHandler(
-  vex: Vex,
-  getUser: (ctx: RequestCtx) => VexUser | null | undefined,
-): Handler {
-  return (ctx: RequestCtx): Response => {
-    const name = ctx.url.searchParams.get("name");
-    if (!name) return json({ error: "Missing query name" }, 400);
-
-    let args: Record<string, unknown> = {};
-    const rawArgs = ctx.url.searchParams.get("args");
-    if (rawArgs) {
-      try {
-        args = JSON.parse(rawArgs);
-      } catch {
-        return json({ error: "Invalid args" }, 400);
-      }
-    }
-
-    const user = getUser(ctx) ?? null;
-    const encoder = new TextEncoder();
-
-    const stream = new ReadableStream({
-      async start(controller) {
-        let unsubscribe: (() => void) | null = null;
-        try {
-          unsubscribe = await vex.subscribe(
-            name,
-            args,
-            (data) => {
-              try {
-                controller.enqueue(
-                  encoder.encode(`data: ${JSON.stringify(data)}\n\n`),
-                );
-              } catch {
-                unsubscribe?.();
-              }
-            },
-            user ? { user } : undefined,
-          );
-        } catch (err) {
-          controller.enqueue(
-            encoder.encode(
-              `event: error\ndata: ${JSON.stringify({ error: errorMessage(err) })}\n\n`,
-            ),
-          );
-          controller.close();
-          return;
-        }
-        ctx.signal.addEventListener("abort", () => {
-          unsubscribe?.();
-          try {
-            controller.close();
-          } catch {
-            /* already closed */
-          }
-        });
-      },
-    });
-
-    return new Response(stream, {
-      headers: {
-        "content-type": "text/event-stream",
-        "cache-control": "no-cache",
-        connection: "keep-alive",
-      },
-    });
   };
 }
 

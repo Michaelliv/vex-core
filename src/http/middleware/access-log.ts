@@ -32,7 +32,6 @@ export function accessLog(options: AccessLogOptions = {}): Middleware {
   const logger =
     options.logger ??
     ((line: string) => {
-      // biome-ignore lint/suspicious/noConsole: access log is a console primitive
       console.log(line);
     });
   const skip = new Set(options.skipPaths ?? []);

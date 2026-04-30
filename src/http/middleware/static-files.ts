@@ -74,7 +74,6 @@ export function staticFiles(options: StaticFilesOptions): Middleware {
   const rootExists = existsSync(root);
   if (!rootExists) {
     // Don't throw — the server might start before assets are built.
-    // biome-ignore lint/suspicious/noConsole: one-shot startup warning
     console.warn(
       `[staticFiles] directory not found: ${root}. Static requests will fall through.`,
     );
@@ -108,7 +107,7 @@ export function staticFiles(options: StaticFilesOptions): Middleware {
 
     if (spaFallback && !pathname.includes(".")) {
       const fallback = await serve(
-        "/" + index,
+        `/${index}`,
         ctx.req.method,
         root,
         immutablePrefix,
@@ -194,8 +193,8 @@ function cacheFor(
   immutablePrefix: string | null,
 ): string {
   if (!immutablePrefix) return "no-cache";
-  const assetDir = resolve(root, "." + immutablePrefix);
-  if (abs.startsWith(assetDir + "/") || abs.startsWith(assetDir)) {
+  const assetDir = resolve(root, `.${immutablePrefix}`);
+  if (abs.startsWith(`${assetDir}/`) || abs.startsWith(assetDir)) {
     return "public, max-age=31536000, immutable";
   }
   return "no-cache";

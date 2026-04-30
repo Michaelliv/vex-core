@@ -80,7 +80,7 @@ export function bearerAuth(options: BearerAuthOptions): Middleware {
     }
 
     // Public paths bypass the gate entirely.
-    if (publicPaths.some((p) => path === p || path === p + "/")) {
+    if (publicPaths.some((p) => path === p || path === `${p}/`)) {
       return next();
     }
 
@@ -248,7 +248,7 @@ function handleLogout(
   });
 }
 
-function handleLoginPage(ctx: { url: URL }, brand: string): Response {
+function handleLoginPage(_ctx: { url: URL }, brand: string): Response {
   return new Response(renderLoginPage("", brand), {
     status: 200,
     headers: { "content-type": "text/html; charset=utf-8" },

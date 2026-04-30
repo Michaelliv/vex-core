@@ -247,7 +247,7 @@ export class Router {
         const matches =
           m.prefix === "" ||
           pathname === m.prefix ||
-          pathname.startsWith(m.prefix + "/");
+          pathname.startsWith(`${m.prefix}/`);
         if (!matches) continue;
         const rewritten =
           m.prefix === "" ? req : rewriteRequestPath(req, ctx.url, m.prefix);

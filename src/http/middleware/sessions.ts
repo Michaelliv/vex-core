@@ -114,7 +114,6 @@ export function sessions(options: SessionOptions): Middleware {
   // will see the table regardless.
   if (ensured && typeof (ensured as Promise<unknown>).then === "function") {
     (ensured as Promise<unknown>).catch((err) => {
-      // biome-ignore lint/suspicious/noConsole: table-bootstrap warning
       console.error(`[sessions] ensureTable failed: ${String(err)}`);
     });
   }
