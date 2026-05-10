@@ -16,7 +16,6 @@ import type {
   QueryBuilder,
   QueryContext,
   QueryDef,
-  StorageMode,
   VexUser,
   WebhookRequest,
   WebhookResponse,
@@ -65,21 +64,19 @@ interface RegisteredMutation {
 
 export interface VexOptions {
   plugins: Array<PluginFunction | PluginDef>;
-  transactional: StorageAdapter;
-  analytical: StorageAdapter;
+  storage: StorageAdapter;
   tracer?: Tracer;
   appId?: string;
   handlerTimeoutMs?: number;
 }
 
 export class Vex {
-  private transactional: StorageAdapter;
-  private analytical: StorageAdapter;
+  private storage: StorageAdapter;
   private plugins: PluginDef[] = [];
   private queries: Map<string, RegisteredQuery> = new Map();
   private mutations: Map<string, RegisteredMutation> = new Map();
   private subscriptions: Map<string, Subscription> = new Map();
-  private tableStorageMode: Map<string, StorageMode> = new Map();
+  private tables: Set<string> = new Set();
   // Who registered each table. Two plugins registering the same bare
   // name silently share one SQL table with merged schemas — one plugin's
   // NOT NULL can break the other's inserts. registerPlugin fails loudly
@@ -94,12 +91,8 @@ export class Vex {
   private appId: string = "unknown";
   private handlerTimeoutMs: number = 0;
 
-  private constructor(
-    transactional: StorageAdapter,
-    analytical: StorageAdapter,
-  ) {
-    this.transactional = transactional;
-    this.analytical = analytical;
+  private constructor(storage: StorageAdapter) {
+    this.storage = storage;
   }
 
   setTracer(tracer: Tracer | null) {
@@ -144,7 +137,7 @@ export class Vex {
   // ─── Factory ───
 
   static async create(options: VexOptions): Promise<Vex> {
-    const vex = new Vex(options.transactional, options.analytical);
+    const vex = new Vex(options.storage);
     if (options.tracer) vex.tracer = options.tracer;
     if (options.appId) vex.appId = options.appId;
     if (options.handlerTimeoutMs)
@@ -152,12 +145,8 @@ export class Vex {
 
     // Register internal tables
     for (const [name, schema] of Object.entries(INTERNAL_TABLES)) {
-      const mode =
-        schema.storage === "analytical" ? "analytical" : "transactional";
-      vex.tableStorageMode.set(name, mode);
-      const adapter =
-        mode === "analytical" ? vex.analytical : vex.transactional;
-      await adapter.ensureTable(name, schema);
+      vex.tables.add(name);
+      await vex.storage.ensureTable(name, schema);
     }
 
     for (const pluginInput of options.plugins) {
@@ -235,13 +224,8 @@ export class Vex {
     // (rename/drop tables after a plugin refactor) and one-off fixes.
     // Bypasses schema validation entirely. Use sparingly.
     //
-    // Transaction handling:
-    //   - transactional target (default): already wrapped by vex.mutate()
-    //     in a SQLite transaction, so DDL and DML roll back cleanly on
-    //     error without any extra work here.
-    //   - analytical target: the outer SQLite transaction doesn't cover
-    //     DuckDB calls, so we wrap explicitly. Pass noTransaction: 1 for
-    //     statements DuckDB refuses inside a transaction.
+    // Already wrapped by vex.mutate() in a SQLite transaction, so DDL and
+    // DML roll back cleanly on error without any extra work here.
     //
     // Does NOT trigger subscription invalidation — callers subscribed to
     // affected tables won't auto-refresh. Known limitation.
@@ -251,23 +235,13 @@ export class Vex {
         args: {
           sql: "string",
           params: "json",
-          analytical: "number",
-          noTransaction: "number",
         },
         async handler(ctx: MutationContext, args: Record<string, any>) {
           if (!ctx.user?.isAdmin) {
             throw new Error("_system.sql requires admin privileges");
           }
           const params = Array.isArray(args.params) ? args.params : [];
-          if (args.analytical) {
-            if (args.noTransaction) {
-              return vex.analytical.rawQuery(args.sql, ...params);
-            }
-            return vex.analytical.transaction(() =>
-              vex.analytical.rawQuery(args.sql, ...params),
-            );
-          }
-          return vex.transactional.rawQuery(args.sql, ...params);
+          return vex.storage.rawQuery(args.sql, ...params);
         },
       },
     });
@@ -403,11 +377,6 @@ export class Vex {
 
   // ─── Internal ───
 
-  private storageFor(table: string): StorageAdapter {
-    const mode = this.tableStorageMode.get(table) ?? "transactional";
-    return mode === "analytical" ? this.analytical : this.transactional;
-  }
-
   private async registerPlugin(plugin: PluginDef): Promise<void> {
     if (plugin.middleware) this.middleware.push(...plugin.middleware);
 
@@ -421,8 +390,8 @@ export class Vex {
         );
       }
       this.tableOwners.set(tableName, plugin.name);
-      this.tableStorageMode.set(tableName, schema.storage ?? "transactional");
-      await this.storageFor(tableName).ensureTable(tableName, schema);
+      this.tables.add(tableName);
+      await this.storage.ensureTable(tableName, schema);
     }
 
     for (const [name, def] of Object.entries(plugin.queries)) {
@@ -470,11 +439,11 @@ export class Vex {
     this.jobHandlers.set(name, job);
     this.jobIntervalMs.set(name, ms);
 
-    const existing = await this.transactional
+    const existing = await this.storage
       .rawQuery<any>("SELECT _id FROM _jobs WHERE name = ?", name)
       .then((r) => r[0]);
     if (existing) {
-      await this.transactional.update("_jobs", existing._id, {
+      await this.storage.update("_jobs", existing._id, {
         plugin,
         schedule: job.schedule,
         description: job.description ?? null,
@@ -484,7 +453,7 @@ export class Vex {
         retryDelayMs: job.retryDelayMs ?? null,
       });
     } else {
-      await this.transactional.insert("_jobs", {
+      await this.storage.insert("_jobs", {
         name,
         plugin,
         schedule: job.schedule,
@@ -499,7 +468,7 @@ export class Vex {
 
     if (job.enabled !== false) {
       this.startJobTimer(name, job, ms);
-      await this.transactional.rawQuery(
+      await this.storage.rawQuery(
         "UPDATE _jobs SET nextRun = ? WHERE name = ?",
         Date.now() + ms,
         name,
@@ -511,10 +480,10 @@ export class Vex {
     this.stopJobTimer(name);
     this.jobHandlers.delete(name);
     this.jobIntervalMs.delete(name);
-    const row = await this.transactional
+    const row = await this.storage
       .rawQuery<any>("SELECT _id FROM _jobs WHERE name = ?", name)
       .then((r) => r[0]);
-    if (row) await this.transactional.delete("_jobs", row._id);
+    if (row) await this.storage.delete("_jobs", row._id);
   }
 
   async setJobEnabled(name: string, enabled: boolean) {
@@ -522,20 +491,20 @@ export class Vex {
     if (!handler) throw new Error(`Job not found: ${name}`);
     const ms = this.jobIntervalMs.get(name) ?? 0;
 
-    const row = await this.transactional
+    const row = await this.storage
       .rawQuery<any>("SELECT _id FROM _jobs WHERE name = ?", name)
       .then((r) => r[0]);
     if (!row) throw new Error(`Job not found in DB: ${name}`);
 
     if (enabled && ms > 0) {
       this.startJobTimer(name, handler, ms);
-      await this.transactional.update("_jobs", row._id, {
+      await this.storage.update("_jobs", row._id, {
         enabled: 1,
         nextRun: Date.now() + ms,
       });
     } else {
       this.stopJobTimer(name);
-      await this.transactional.update("_jobs", row._id, {
+      await this.storage.update("_jobs", row._id, {
         enabled: 0,
         nextRun: null,
       });
@@ -551,11 +520,11 @@ export class Vex {
     const ms = this.jobIntervalMs.get(cronName) ?? 0;
 
     // Increment runs counter + set nextRun
-    const row = await this.transactional
+    const row = await this.storage
       .rawQuery<any>("SELECT _id, runs FROM _jobs WHERE name = ?", cronName)
       .then((r) => r[0]);
     if (row) {
-      await this.transactional.update("_jobs", row._id, {
+      await this.storage.update("_jobs", row._id, {
         lastRun: startTime,
         runs: (row.runs ?? 0) + 1,
         ...(ms > 0 ? { nextRun: startTime + ms } : {}),
@@ -572,7 +541,7 @@ export class Vex {
             meta.schedule = job.schedule;
             meta.attempt = attempt;
             const ctx = this.buildMutationContext();
-            await this.transactional.transaction(() => job.handler(ctx));
+            await this.storage.transaction(() => job.handler(ctx));
             await this.invalidateSubscriptions(ectx);
           },
         );
@@ -594,7 +563,7 @@ export class Vex {
 
         // Update status in table
         if (row) {
-          await this.transactional.update("_jobs", row._id, {
+          await this.storage.update("_jobs", row._id, {
             lastStatus: "ok",
             lastError: null,
             lastDurationMs: Date.now() - startTime,
@@ -609,7 +578,7 @@ export class Vex {
         );
 
         if (row) {
-          await this.transactional.update("_jobs", row._id, {
+          await this.storage.update("_jobs", row._id, {
             lastStatus: "error",
             lastError: errMsg,
             lastDurationMs: Date.now() - startTime,
@@ -627,7 +596,7 @@ export class Vex {
     const handler = this.jobHandlers.get(name);
     if (!handler) throw new Error(`Job not found: ${name}`);
     await this.executeJob(name, handler);
-    const row = await this.transactional
+    const row = await this.storage
       .rawQuery<any>(
         "SELECT lastStatus, lastError, lastDurationMs FROM _jobs WHERE name = ?",
         name,
@@ -649,13 +618,13 @@ export class Vex {
       db: {
         table(name: string) {
           if (touchedTables) touchedTables.add(name);
-          return self.storageFor(name).query(name);
+          return self.storage.query(name);
         },
         sql<T = Record<string, any>>(
           sql: string,
           ...params: any[]
         ): Promise<T[]> {
-          return self.transactional.rawQuery<T>(sql, ...params);
+          return self.storage.rawQuery<T>(sql, ...params);
         },
       },
       user: user ?? undefined,
@@ -670,10 +639,10 @@ export class Vex {
           sql: string,
           ...params: any[]
         ): Promise<T[]> {
-          return self.transactional.rawQuery<T>(sql, ...params);
+          return self.storage.rawQuery<T>(sql, ...params);
         },
         table(name: string): MutationTable {
-          const adapter = self.storageFor(name);
+          const adapter = self.storage;
           function build(qb: QueryBuilder): MutationTable {
             return {
               where: (col, op, val) => build(qb.where(col, op, val)),
@@ -746,11 +715,10 @@ export class Vex {
   }
 
   private async invalidateSubscriptions(ectx: ExecContext): Promise<void> {
-    const txChanged = this.transactional.getChangedTables();
-    const anChanged = this.analytical.getChangedTables();
-    if (txChanged.length === 0 && anChanged.length === 0) return;
+    const changed = this.storage.getChangedTables();
+    if (changed.length === 0) return;
 
-    const changedSet = new Set([...txChanged, ...anChanged]);
+    const changedSet = new Set(changed);
 
     return this.trace(
       "invalidation",
@@ -850,7 +818,7 @@ export class Vex {
       if (!reg) throw new Error(`Mutation not found: ${name}`);
       meta.plugin = reg.plugin;
       const ctx = this.buildMutationContext(user);
-      const result = await this.transactional.transaction(() =>
+      const result = await this.storage.transaction(() =>
         this.runMiddleware(
           ctx,
           { type: "mutation", name, args },
@@ -928,7 +896,7 @@ export class Vex {
           name: `${match.plugin}.${match.name}`,
           args: req.body ?? {},
         };
-        const result = await this.transactional.transaction(() =>
+        const result = await this.storage.transaction(() =>
           this.runMiddleware(
             ctx,
             info,
@@ -967,14 +935,7 @@ export class Vex {
     sql: string,
     ...params: any[]
   ): Promise<T[]> {
-    return this.transactional.rawQuery<T>(sql, ...params);
-  }
-
-  async unsafeAnalyticalSql<T = Record<string, any>>(
-    sql: string,
-    ...params: any[]
-  ): Promise<T[]> {
-    return this.analytical.rawQuery<T>(sql, ...params);
+    return this.storage.rawQuery<T>(sql, ...params);
   }
 
   async unsafeBulkInsert(
@@ -982,16 +943,13 @@ export class Vex {
     rows: Record<string, any>[],
   ): Promise<void> {
     return this.trace("bulkInsert", table, null, async (ectx) => {
-      await this.storageFor(table).bulkInsert(table, rows);
+      await this.storage.bulkInsert(table, rows);
       await this.invalidateSubscriptions(ectx);
     });
   }
 
-  unsafeGetAnalytical(): StorageAdapter {
-    return this.analytical;
-  }
-  unsafeGetTransactional(): StorageAdapter {
-    return this.transactional;
+  unsafeGetStorage(): StorageAdapter {
+    return this.storage;
   }
 
   // ─── Introspection ───
@@ -1006,19 +964,15 @@ export class Vex {
     return this.plugins.map((p) => ({ name: p.name }));
   }
   listTables() {
-    return [...this.tableStorageMode.entries()].map(([name, storage]) => ({
-      name,
-      storage,
-    }));
+    return [...this.tables].map((name) => ({ name }));
   }
   activeSubscriptionCount() {
     return this.subscriptions.size;
   }
 
   async describeTable(table: string) {
-    const storage = this.storageFor(table);
-    const rowCount = await storage.query(table).count();
-    const schema = storage.getSchema(table);
+    const rowCount = await this.storage.query(table).count();
+    const schema = this.storage.getSchema(table);
     const columns: Record<string, { type: string; optional?: boolean }> = {};
     if (schema?.columns) {
       for (const [col, def] of Object.entries(schema.columns))
@@ -1029,7 +983,6 @@ export class Vex {
     }
     return {
       name: table,
-      storage: this.tableStorageMode.get(table) ?? "transactional",
       columns,
       rowCount,
     };
@@ -1046,7 +999,7 @@ export class Vex {
 
   async introspect() {
     const tables = await Promise.all(
-      [...this.tableStorageMode.keys()].map((t) => this.describeTable(t)),
+      [...this.tables].map((t) => this.describeTable(t)),
     );
     const queries = [...this.queries.entries()].map(([name, q]) => ({
       name,
@@ -1068,9 +1021,8 @@ export class Vex {
 
   async readTable(table: string, opts?: { limit?: number; offset?: number }) {
     return this.trace("query", `_system.readTable:${table}`, null, async () => {
-      const storage = this.storageFor(table);
-      const total = await storage.query(table).count();
-      const reader = storage.query(table);
+      const total = await this.storage.query(table).count();
+      const reader = this.storage.query(table);
       if (opts?.limit) reader.limit(opts.limit);
       if (opts?.offset) reader.offset(opts.offset);
       reader.order("_id", "desc");
@@ -1082,8 +1034,7 @@ export class Vex {
     for (const timer of this.cronTimers.values()) clearInterval(timer);
     this.cronTimers.clear();
     this.subscriptions.clear();
-    await this.transactional.close();
-    await this.analytical.close();
+    await this.storage.close();
   }
 }
 

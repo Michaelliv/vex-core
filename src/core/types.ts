@@ -9,13 +9,10 @@ export interface ColumnDef {
   default?: any;
 }
 
-export type StorageMode = "transactional" | "analytical";
-
 export interface TableSchema {
   columns: Record<string, ColumnDef>;
   indexes?: [name: string, columns: string[]][];
   unique?: string[][];
-  storage?: StorageMode;
 }
 
 export interface Filter {

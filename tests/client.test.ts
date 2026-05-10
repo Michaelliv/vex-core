@@ -15,8 +15,7 @@ let base: string;
 
 beforeAll(async () => {
   vex = await Vex.create({
-    transactional: sqliteAdapter(":memory:"),
-    analytical: sqliteAdapter(":memory:"),
+    storage: sqliteAdapter(":memory:"),
     plugins: [
       {
         name: "items",

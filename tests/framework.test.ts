@@ -25,14 +25,7 @@ describe("define", () => {
     expect(isTable(t)).toBe(true);
     expect(t.columns.name.type).toBe("string");
     expect(t.columns.age.type).toBe("number");
-    expect(t.storage).toBe("transactional");
-  });
-
-  test("table() with analytical storage", () => {
-    const t = table("analytical", { value: "number" });
-    expect(isTable(t)).toBe(true);
-    expect(t.storage).toBe("analytical");
-    expect(t.columns.value.type).toBe("number");
+    expect("storage" in t).toBe(false);
   });
 
   test("table() with column options", () => {
@@ -255,15 +248,5 @@ describe("scanner", () => {
     const result = await scanDirectory(TMP);
     const plugin = result.plugins.find((p) => p.name === "chat");
     expect(plugin!.tables).toHaveProperty("chat_messages");
-  });
-
-  test("analytical table preserves storage mode", async () => {
-    writeFile(
-      "schema.ts",
-      `import { table } from "@vex/define";
-       export const events = table("analytical", { type: "string", ts: "number" });`,
-    );
-    const result = await scanDirectory(TMP);
-    expect(result.plugins[0].tables.events.storage).toBe("analytical");
   });
 });

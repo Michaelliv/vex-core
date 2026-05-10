@@ -1,6 +1,6 @@
 # vex-core
 
-Local-first reactive backend engine. Plugin architecture, SQLite for transactions, DuckDB for analytics, real-time subscriptions via SSE.
+Local-first reactive backend engine. Plugin architecture, SQLite storage, real-time subscriptions via SSE.
 
 ```
 npm install vex-core
@@ -18,8 +18,7 @@ Peer: `react` ^19 (only if you use `vex-core/client`).
 import { Vex, sqliteAdapter } from "vex-core";
 
 const vex = await Vex.create({
-  transactional: sqliteAdapter(".vex/data.db"),
-  analytical: sqliteAdapter(".vex/analytics.db"),
+  storage: sqliteAdapter(".vex/data.db"),
   plugins: [
     (api) => {
       api.setName("counter");
@@ -72,23 +71,6 @@ ctx.db.table("orders")
   .limit(20);
 ```
 
-## Analytical tables
-
-Tables with `storage: "analytical"` route to the analytical adapter (SQLite or DuckDB).
-
-```ts
-api.registerTable("events", {
-  storage: "analytical",
-  columns: {
-    timestamp: { type: "number" },
-    type: { type: "string" },
-    data: { type: "json" },
-  },
-});
-```
-
-Use `duckdbAdapter` from `vex-core/adapters/duckdb` when you want columnar scans.
-
 ## File-based conventions
 
 Flat files, no config. Use `scanDirectory` to turn a folder into plugins.
@@ -112,8 +94,7 @@ import { Vex, sqliteAdapter } from "vex-core";
 
 const { plugins } = await scanDirectory("./app");
 const vex = await Vex.create({
-  transactional: sqliteAdapter(".vex/data.db"),
-  analytical: sqliteAdapter(".vex/analytics.db"),
+  storage: sqliteAdapter(".vex/data.db"),
   plugins,
 });
 ```
@@ -220,7 +201,7 @@ ALL  /webhook/*          user-defined webhooks
 | `bodyParser({ limit, json, urlencoded, text })` | Parse request body into `ctx.state.body`. |
 | `rateLimit({ requests, window, key })`      | 429 + `Retry-After` + `X-RateLimit-*`. |
 | `staticFiles({ dir, index, spaFallback, immutablePrefix })` | Serve built assets. Fallback-on-404 semantics: explicit routes win, static serves what's left. SPA-friendly. |
-| `sessions({ storage, cookieName, maxAge, rolling })` | Server-side session store on any `StorageAdapter` (sqlite/duckdb/custom). `ctx.session.get/set/delete/destroy`. |
+| `sessions({ storage, cookieName, maxAge, rolling })` | Server-side session store on any `StorageAdapter` (SQLite/custom). `ctx.session.get/set/delete/destroy`. |
 
 ### Sessions
 
@@ -289,12 +270,11 @@ Without this, `_spans` grows unbounded.
 
 | Entry | Contents |
 |-------|----------|
-| `vex-core` | `Vex`, `sqliteAdapter`, `duckdbAdapter`, `id`, core types, tracer, auth helpers |
+| `vex-core` | `Vex`, `sqliteAdapter`, `id`, core types, tracer, auth helpers |
 | `vex-core/framework` | `table`, `query`, `mutation`, `webhook`, `job`, `middleware`, `scanDirectory` |
 | `vex-core/http` | `Router`, `createRouter`, `HttpError`, `compose`, `vexHandler`, plus middleware (`cors`, `bearerAuth`, `bodyParser`, `accessLog`, `requestId`, `rateLimit`, `staticFiles`, `errorBoundary`, `sessions`) |
 | `vex-core/client` | `VexProvider`, `useQuery`, `useMutation` |
 | `vex-core/adapters/sqlite` | `sqliteAdapter` |
-| `vex-core/adapters/duckdb` | `duckdbAdapter` |
 
 ## License
 

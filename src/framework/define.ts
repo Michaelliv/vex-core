@@ -55,28 +55,17 @@ export function table(
     string,
     string | { type: string; index?: boolean; optional?: boolean }
   >,
-): VexTable;
-export function table(
-  storage: "analytical",
-  columns: Record<
-    string,
-    string | { type: string; index?: boolean; optional?: boolean }
-  >,
-): VexTable;
-export function table(first: any, second?: any): VexTable {
-  const storage = typeof first === "string" ? first : "transactional";
-  const rawColumns = typeof first === "string" ? second : first;
-
-  const columns: TableSchema["columns"] = {};
-  for (const [name, def] of Object.entries(rawColumns)) {
+): VexTable {
+  const normalized: TableSchema["columns"] = {};
+  for (const [name, def] of Object.entries(columns)) {
     if (typeof def === "string") {
-      columns[name] = { type: def as any };
+      normalized[name] = { type: def as any };
     } else {
-      columns[name] = def as any;
+      normalized[name] = def as any;
     }
   }
 
-  return { [KIND]: "table", columns, storage } as VexTable;
+  return { [KIND]: "table", columns: normalized } as VexTable;
 }
 
 export function query(

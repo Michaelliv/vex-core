@@ -9,7 +9,6 @@ import {
   type DbExec,
   quoteIdent,
   serializeValue,
-  toSqlType,
 } from "./shared.js";
 
 interface ExpectedIndex {
@@ -25,6 +24,17 @@ interface ExistingColumn {
 }
 
 const SQLITE_INDEX_METADATA_TABLE = "__vex_sqlite_indexes";
+
+function toSqlType(type: TableSchema["columns"][string]["type"]): string {
+  switch (type) {
+    case "number":
+      return "REAL";
+    case "boolean":
+      return "INTEGER";
+    default:
+      return "TEXT";
+  }
+}
 
 function getIndexColumns(db: Database, indexName: string): string[] {
   const rows = db
@@ -62,7 +72,7 @@ function columnNeedsRebuild(
   col: ExistingColumn,
   colDef: TableSchema["columns"][string],
 ): boolean {
-  const expectedType = toSqlType(colDef.type, "sqlite").toUpperCase();
+  const expectedType = toSqlType(colDef.type).toUpperCase();
   const actualType = (col.type || "TEXT").toUpperCase();
   const expectedRequired = !colDef.optional;
   const actualRequired = col.notnull === 1;
@@ -77,7 +87,7 @@ function columnSql(
   colName: string,
   colDef: TableSchema["columns"][string],
 ): string {
-  const sqlType = toSqlType(colDef.type, "sqlite");
+  const sqlType = toSqlType(colDef.type);
   const nullable = colDef.optional ? "" : " NOT NULL";
   return `${quoteIdent(colName)} ${sqlType}${nullable}${defaultSql(colDef)}`;
 }
@@ -87,7 +97,7 @@ function migratedColumnSql(
   colDef: TableSchema["columns"][string],
   enforceRequired: boolean,
 ): string {
-  const sqlType = toSqlType(colDef.type, "sqlite");
+  const sqlType = toSqlType(colDef.type);
   const nullable = !colDef.optional && enforceRequired ? " NOT NULL" : "";
   return `${quoteIdent(colName)} ${sqlType}${nullable}${defaultSql(colDef)}`;
 }

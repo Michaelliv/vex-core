@@ -1,6 +1,6 @@
 /**
  * Sessions middleware — server-side session store backed by any
- * `StorageAdapter` (sqlite, duckdb, or a custom one). The session id
+ * `StorageAdapter` (SQLite or a custom one). The session id
  * lives in an HTTP-only cookie; session data lives in a row.
  *
  * Design
@@ -35,8 +35,8 @@ import type { Middleware, Session } from "../types.js";
 export interface SessionOptions {
   /**
    * Storage adapter to persist sessions in. Typically the same one
-   * your Vex instance uses for its transactional storage. Passing
-   * a dedicated adapter is fine too (e.g. a separate SQLite file).
+   * your Vex instance uses. Passing a dedicated adapter is fine too
+   * (e.g. a separate SQLite file).
    */
   storage: StorageAdapter;
   /** Cookie name. Default `vex_session`. */
@@ -63,7 +63,7 @@ export interface SessionOptions {
 /**
  * Shape of a persisted session row. `data` is declared as `json` in
  * the table schema, which means the storage adapter may hand it back
- * to us already parsed (sqlite/duckdb adapters auto-parse `json`
+ * to us already parsed (SQLite adapters auto-parse `json`
  * columns). We accept either and normalize in `readData` below.
  */
 interface SessionRow {

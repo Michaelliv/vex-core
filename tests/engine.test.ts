@@ -64,8 +64,7 @@ let vex: Vex;
 beforeEach(async () => {
   vex = await Vex.create({
     plugins: [kvPlugin],
-    transactional: sqliteAdapter(":memory:"),
-    analytical: sqliteAdapter(":memory:"),
+    storage: sqliteAdapter(":memory:"),
   });
 });
 
@@ -148,8 +147,7 @@ describe("subscriptions", () => {
 describe("mutation context chaining", () => {
   test("where().where() chains correctly in mutations", async () => {
     const cvex = await Vex.create({
-      transactional: sqliteAdapter(":memory:"),
-      analytical: sqliteAdapter(":memory:"),
+      storage: sqliteAdapter(":memory:"),
       plugins: [
         (api: VexPluginAPI) => {
           api.setName("t");
@@ -225,8 +223,7 @@ describe("mutation context chaining", () => {
 describe("custom plugin", () => {
   test("register and use inline plugin", async () => {
     const customVex = await Vex.create({
-      transactional: sqliteAdapter(":memory:"),
-      analytical: sqliteAdapter(":memory:"),
+      storage: sqliteAdapter(":memory:"),
       plugins: [
         (api: VexPluginAPI) => {
           api.setName("todo");
@@ -264,172 +261,10 @@ describe("custom plugin", () => {
   });
 });
 
-describe("analytical storage", () => {
-  test("tables with storage: analytical go to analytical adapter", async () => {
-    const txAdapter = sqliteAdapter(":memory:");
-    const anAdapter = sqliteAdapter(":memory:");
-
-    const dualVex = await Vex.create({
-      transactional: txAdapter,
-      analytical: anAdapter,
-      plugins: [
-        kvPlugin,
-        (api: VexPluginAPI) => {
-          api.setName("analytics");
-          api.registerTable("events", {
-            storage: "analytical",
-            columns: {
-              timestamp: { type: "number" },
-              type: { type: "string" },
-              data: { type: "json", optional: true },
-            },
-          });
-          api.registerMutation("track", {
-            args: { type: "string", data: "any" },
-            async handler(ctx, args) {
-              await ctx.db.table("events").insert({
-                timestamp: Date.now(),
-                type: args.type,
-                data: args.data ?? null,
-              });
-            },
-          });
-          api.registerQuery("count", {
-            args: { type: "string" },
-            async handler(ctx, args) {
-              return ctx.db
-                .table("events")
-                .where("type", "=", args.type)
-                .count();
-            },
-          });
-          api.registerQuery("all", {
-            args: {},
-            async handler(ctx) {
-              return ctx.db.table("events").all();
-            },
-          });
-        },
-      ],
-    });
-
-    await dualVex.mutate("kv.set", { scope: "s1", key: "x", value: 1 });
-    expect(await dualVex.query("kv.get", { scope: "s1", key: "x" })).toBe(1);
-
-    await dualVex.mutate("analytics.track", {
-      type: "click",
-      data: { page: "/home" },
-    });
-    await dualVex.mutate("analytics.track", {
-      type: "click",
-      data: { page: "/about" },
-    });
-    await dualVex.mutate("analytics.track", { type: "signup" });
-
-    expect(await dualVex.query("analytics.count", { type: "click" })).toBe(2);
-    expect((await dualVex.query("analytics.all")).length).toBe(3);
-
-    const txTables = await txAdapter.rawQuery<{ name: string }>(
-      "SELECT name FROM sqlite_master WHERE type='table'",
-    );
-    expect(txTables.map((t) => t.name)).not.toContain("events");
-    expect(txTables.map((t) => t.name)).toContain("kv");
-
-    const anTables = await anAdapter.rawQuery<{ name: string }>(
-      "SELECT name FROM sqlite_master WHERE type='table'",
-    );
-    expect(anTables.map((t) => t.name)).toContain("events");
-
-    await dualVex.close();
-  });
-
-  test("raw SQL queries against both engines", async () => {
-    const dualVex = await Vex.create({
-      transactional: sqliteAdapter(":memory:"),
-      analytical: sqliteAdapter(":memory:"),
-      plugins: [
-        kvPlugin,
-        (api: VexPluginAPI) => {
-          api.setName("metrics");
-          api.registerTable("metrics", {
-            storage: "analytical",
-            columns: {
-              name: { type: "string" },
-              value: { type: "number" },
-            },
-          });
-          api.registerMutation("record", {
-            args: { name: "string", value: "number" },
-            async handler(ctx, args) {
-              await ctx.db
-                .table("metrics")
-                .insert({ name: args.name, value: args.value });
-            },
-          });
-        },
-      ],
-    });
-
-    await dualVex.mutate("kv.set", { scope: "s1", key: "a", value: 1 });
-    await dualVex.mutate("metrics.record", { name: "cpu", value: 45 });
-    await dualVex.mutate("metrics.record", { name: "cpu", value: 60 });
-    await dualVex.mutate("metrics.record", { name: "mem", value: 80 });
-
-    const kvRows = await dualVex.unsafeSql("SELECT * FROM kv");
-    expect(kvRows).toHaveLength(1);
-
-    const avgCpu = await dualVex.unsafeAnalyticalSql<{ avg_val: number }>(
-      "SELECT AVG(value) as avg_val FROM metrics WHERE name = ?",
-      "cpu",
-    );
-    expect(avgCpu[0].avg_val).toBe(52.5);
-
-    await dualVex.close();
-  });
-
-  test("bulk insert into analytical table", async () => {
-    const dualVex = await Vex.create({
-      transactional: sqliteAdapter(":memory:"),
-      analytical: sqliteAdapter(":memory:"),
-      plugins: [
-        (api: VexPluginAPI) => {
-          api.setName("data");
-          api.registerTable("rows", {
-            storage: "analytical",
-            columns: {
-              x: { type: "number" },
-              y: { type: "number" },
-            },
-          });
-          api.registerQuery("count", {
-            args: {},
-            async handler(ctx) {
-              return ctx.db.table("rows").count();
-            },
-          });
-        },
-      ],
-    });
-
-    const rows = Array.from({ length: 1000 }, (_, i) => ({ x: i, y: i * 2 }));
-    await dualVex.unsafeBulkInsert("rows", rows);
-
-    expect(await dualVex.query("data.count")).toBe(1000);
-
-    const sum = await dualVex.unsafeAnalyticalSql<{ total: number }>(
-      "SELECT SUM(y) as total FROM rows",
-    );
-    expect(sum[0].total).toBe(999000);
-
-    await dualVex.close();
-  });
-});
-
 describe("webhooks", () => {
   test("route by path and method", async () => {
     const wvex = await Vex.create({
-      transactional: sqliteAdapter(":memory:"),
-      analytical: sqliteAdapter(":memory:"),
+      storage: sqliteAdapter(":memory:"),
       plugins: [
         kvPlugin,
         (api: VexPluginAPI) => {
@@ -472,8 +307,7 @@ describe("webhooks", () => {
 
   test("verify rejects invalid signature", async () => {
     const wvex = await Vex.create({
-      transactional: sqliteAdapter(":memory:"),
-      analytical: sqliteAdapter(":memory:"),
+      storage: sqliteAdapter(":memory:"),
       plugins: [
         (api: VexPluginAPI) => {
           api.setName("hooks");
@@ -514,8 +348,7 @@ describe("webhooks", () => {
 
   test("404 for unknown path", async () => {
     const wvex = await Vex.create({
-      transactional: sqliteAdapter(":memory:"),
-      analytical: sqliteAdapter(":memory:"),
+      storage: sqliteAdapter(":memory:"),
       plugins: [],
     });
 
@@ -538,8 +371,7 @@ describe("middleware", () => {
     const log: string[] = [];
 
     const mvex = await Vex.create({
-      transactional: sqliteAdapter(":memory:"),
-      analytical: sqliteAdapter(":memory:"),
+      storage: sqliteAdapter(":memory:"),
       plugins: [
         kvPlugin,
         (api: VexPluginAPI) => {
@@ -564,8 +396,7 @@ describe("middleware", () => {
 
   test("can block operations", async () => {
     const mvex = await Vex.create({
-      transactional: sqliteAdapter(":memory:"),
-      analytical: sqliteAdapter(":memory:"),
+      storage: sqliteAdapter(":memory:"),
       plugins: [
         kvPlugin,
         (api: VexPluginAPI) => {
@@ -595,8 +426,7 @@ describe("middleware", () => {
     const order: number[] = [];
 
     const mvex = await Vex.create({
-      transactional: sqliteAdapter(":memory:"),
-      analytical: sqliteAdapter(":memory:"),
+      storage: sqliteAdapter(":memory:"),
       plugins: [
         kvPlugin,
         (api: VexPluginAPI) => {
@@ -636,8 +466,7 @@ describe("middleware", () => {
     const log: string[] = [];
 
     const mvex = await Vex.create({
-      transactional: sqliteAdapter(":memory:"),
-      analytical: sqliteAdapter(":memory:"),
+      storage: sqliteAdapter(":memory:"),
       plugins: [
         (api: VexPluginAPI) => {
           api.setName("hooks");
@@ -690,8 +519,7 @@ describe("middleware", () => {
           });
         },
       ],
-      transactional: sqliteAdapter(":memory:"),
-      analytical: sqliteAdapter(":memory:"),
+      storage: sqliteAdapter(":memory:"),
     });
 
     await mvex.query("test.list");
@@ -720,8 +548,7 @@ describe("middleware", () => {
           });
         },
       ],
-      transactional: sqliteAdapter(":memory:"),
-      analytical: sqliteAdapter(":memory:"),
+      storage: sqliteAdapter(":memory:"),
     });
 
     await mvex.mutate("test.add", { name: "x" });
@@ -754,8 +581,7 @@ describe("plugin name collisions", () => {
             });
           },
         ],
-        transactional: sqliteAdapter(":memory:"),
-        analytical: sqliteAdapter(":memory:"),
+        storage: sqliteAdapter(":memory:"),
       }),
     ).rejects.toThrow("Duplicate query: items.list");
   });
@@ -784,8 +610,7 @@ describe("plugin name collisions", () => {
             });
           },
         ],
-        transactional: sqliteAdapter(":memory:"),
-        analytical: sqliteAdapter(":memory:"),
+        storage: sqliteAdapter(":memory:"),
       }),
     ).rejects.toThrow("Duplicate mutation: items.add");
   });
@@ -807,8 +632,7 @@ describe("plugin name collisions", () => {
             });
           },
         ],
-        transactional: sqliteAdapter(":memory:"),
-        analytical: sqliteAdapter(":memory:"),
+        storage: sqliteAdapter(":memory:"),
       }),
     ).rejects.toThrow('Duplicate table "runs"');
   });
@@ -835,8 +659,7 @@ describe("plugin name collisions", () => {
           });
         },
       ],
-      transactional: sqliteAdapter(":memory:"),
-      analytical: sqliteAdapter(":memory:"),
+      storage: sqliteAdapter(":memory:"),
     });
 
     expect(mvex.listQueries()).toContain("users.list");
@@ -917,8 +740,7 @@ describe("handler timeout", () => {
           });
         },
       ],
-      transactional: sqliteAdapter(":memory:"),
-      analytical: sqliteAdapter(":memory:"),
+      storage: sqliteAdapter(":memory:"),
       handlerTimeoutMs: 50,
     });
 
@@ -941,8 +763,7 @@ describe("handler timeout", () => {
           });
         },
       ],
-      transactional: sqliteAdapter(":memory:"),
-      analytical: sqliteAdapter(":memory:"),
+      storage: sqliteAdapter(":memory:"),
       handlerTimeoutMs: 5000,
     });
 

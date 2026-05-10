@@ -1,6 +1,4 @@
 // Adapters
-export type { DuckDBAdapter, DuckDBAdapterExtras } from "./adapters/duckdb.js";
-export { duckdbAdapter } from "./adapters/duckdb.js";
 export { sqliteAdapter } from "./adapters/sqlite.js";
 
 // Core
@@ -41,7 +39,6 @@ export type {
   QueryBuilder,
   QueryContext,
   QueryDef,
-  StorageMode,
   TableSchema,
   VexUser,
   WebhookDef,

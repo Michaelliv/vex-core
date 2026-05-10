@@ -12,7 +12,6 @@ import { join } from "node:path";
 
 setDefaultTimeout(15_000);
 
-import { duckdbAdapter } from "../src/adapters/duckdb.js";
 import { sqliteAdapter } from "../src/adapters/sqlite.js";
 import type { StorageAdapter } from "../src/core/storage.js";
 import type { TableSchema } from "../src/core/types.js";
@@ -612,7 +611,6 @@ function adapterSuite(name: string, create: () => Promise<StorageAdapter>) {
 }
 
 adapterSuite("sqlite", async () => sqliteAdapter(":memory:"));
-adapterSuite("duckdb", async () => duckdbAdapter(":memory:"));
 
 // --- sqlite-specific ---
 
@@ -1877,19 +1875,5 @@ describe("sqlite-specific", () => {
     expect(indexes).not.toContain('uq_odd " table_odd " col_other');
     expect(indexes).toContain('uq_odd " table_other');
     adapter.close();
-  });
-});
-
-// --- duckdb-specific ---
-
-describe("duckdb-specific", () => {
-  test("primary key prevents duplicate _id", async () => {
-    const adapter = await duckdbAdapter(":memory:");
-    await adapter.ensureTable("users", schema);
-    await adapter.insert("users", { _id: "dup", name: "alice", age: 30 });
-    expect(async () => {
-      await adapter.insert("users", { _id: "dup", name: "bob", age: 25 });
-    }).toThrow();
-    await adapter.close();
   });
 });

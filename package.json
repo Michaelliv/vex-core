@@ -1,7 +1,7 @@
 {
   "name": "vex-core",
-  "version": "0.4.3",
-  "description": "Local-first reactive backend engine. Plugin architecture, SQLite + DuckDB storage, real-time subscriptions.",
+  "version": "0.5.0",
+  "description": "Local-first reactive backend engine. Plugin architecture, SQLite storage, real-time subscriptions.",
   "type": "module",
   "main": "./dist/index.js",
   "types": "./dist/index.d.ts",
@@ -30,11 +30,6 @@
       "types": "./dist/adapters/sqlite.d.ts",
       "import": "./dist/adapters/sqlite.js",
       "default": "./dist/adapters/sqlite.js"
-    },
-    "./adapters/duckdb": {
-      "types": "./dist/adapters/duckdb.d.ts",
-      "import": "./dist/adapters/duckdb.js",
-      "default": "./dist/adapters/duckdb.js"
     }
   },
   "files": [
@@ -55,7 +50,6 @@
     "database",
     "reactive",
     "sqlite",
-    "duckdb",
     "local-first",
     "convex",
     "plugin",
@@ -84,7 +78,6 @@
     "typescript": "^5.8.0"
   },
   "dependencies": {
-    "@duckdb/node-api": "^1.5.2-r.1",
     "nanoid": "^5.1.7"
   },
   "peerDependencies": {

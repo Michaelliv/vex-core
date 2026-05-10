@@ -1,6 +1,5 @@
 import type {
   AggDef,
-  ColumnDef,
   Filter,
   GroupByBuilder,
   QueryBuilder,
@@ -322,21 +321,4 @@ export function buildUpdateSql(
     sql: `UPDATE ${quoteIdent(table)} SET ${setClauses} WHERE _id = ?`,
     values,
   };
-}
-
-export function toSqlType(
-  type: ColumnDef["type"],
-  dialect: "sqlite" | "duckdb",
-): string {
-  switch (type) {
-    case "number":
-      return dialect === "sqlite" ? "REAL" : "DOUBLE";
-    case "boolean":
-      return dialect === "sqlite" ? "INTEGER" : "BOOLEAN";
-    case "json":
-    case "any":
-      return dialect === "sqlite" ? "TEXT" : "VARCHAR";
-    default:
-      return dialect === "sqlite" ? "TEXT" : "VARCHAR";
-  }
 }

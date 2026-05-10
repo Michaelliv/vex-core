@@ -46,9 +46,8 @@ function fileToPluginName(filePath: string, root: string): string {
 }
 
 function extractTableSchema(value: any): TableSchema {
-  const { columns, storage, indexes, unique } = value;
+  const { columns, indexes, unique } = value;
   const schema: TableSchema = { columns };
-  if (storage) schema.storage = storage;
   if (indexes) schema.indexes = indexes;
   if (unique) schema.unique = unique;
   return schema;
