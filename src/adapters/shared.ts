@@ -7,6 +7,10 @@ import type {
   TableSchema,
 } from "../core/types.js";
 
+export function quoteIdent(name: string): string {
+  return `"${name.replaceAll('"', '""')}"`;
+}
+
 export function serializeValue(v: any): any {
   if (v === undefined || v === null) return null;
   if (typeof v === "object") return JSON.stringify(v);
@@ -43,13 +47,29 @@ export function buildWhereClause(filters: Filter[]): {
   const parts: string[] = [];
   const params: any[] = [];
   for (const f of filters) {
+    const value = serializeValue(f.value);
     if (f.operator === "IN") {
       const arr = Array.isArray(f.value) ? f.value : [f.value];
-      parts.push(`"${f.column}" IN (${arr.map(() => "?").join(", ")})`);
-      params.push(...arr);
+      const values = arr.map(serializeValue);
+      const nonNullValues = values.filter((item) => item !== null);
+      const clauses: string[] = [];
+      if (nonNullValues.length > 0) {
+        clauses.push(
+          `${quoteIdent(f.column)} IN (${nonNullValues.map(() => "?").join(", ")})`,
+        );
+        params.push(...nonNullValues);
+      }
+      if (values.some((item) => item === null)) {
+        clauses.push(`${quoteIdent(f.column)} IS NULL`);
+      }
+      parts.push(clauses.length > 0 ? `(${clauses.join(" OR ")})` : "0 = 1");
+    } else if (value === null && f.operator === "=") {
+      parts.push(`${quoteIdent(f.column)} IS NULL`);
+    } else if (value === null && f.operator === "!=") {
+      parts.push(`${quoteIdent(f.column)} IS NOT NULL`);
     } else {
-      parts.push(`"${f.column}" ${f.operator} ?`);
-      params.push(f.value);
+      parts.push(`${quoteIdent(f.column)} ${f.operator} ?`);
+      params.push(value);
     }
   }
   return { sql: `WHERE ${parts.join(" AND ")}`, params };
@@ -59,6 +79,7 @@ export interface DbExec {
   all(sql: string, params: any[]): Promise<any[]>;
   run(sql: string, params: any[]): Promise<{ changes: number }>;
   schemas: Map<string, TableSchema>;
+  markChanged?: (table: string, changes: number) => void;
 }
 
 export function createQueryBuilder(exec: DbExec, table: string): QueryBuilder {
@@ -74,11 +95,14 @@ export function createQueryBuilder(exec: DbExec, table: string): QueryBuilder {
     const select = countOnly
       ? "COUNT(*) as c"
       : selectCols
-        ? selectCols.map((c) => `"${c}"`).join(", ")
+        ? selectCols.map((c) => quoteIdent(c)).join(", ")
         : "*";
-    let sql = `SELECT ${select} FROM "${table}" ${where}`;
-    if (!countOnly && orderCol) sql += ` ORDER BY "${orderCol}" ${orderDir}`;
+    let sql = `SELECT ${select} FROM ${quoteIdent(table)} ${where}`;
+    if (!countOnly && orderCol) {
+      sql += ` ORDER BY ${quoteIdent(orderCol)} ${orderDir}`;
+    }
     if (!countOnly && limitN !== null) sql += ` LIMIT ${limitN}`;
+    if (!countOnly && limitN === null && offsetN !== null) sql += " LIMIT -1";
     if (!countOnly && offsetN !== null) sql += ` OFFSET ${offsetN}`;
     return { sql, params };
   }
@@ -122,11 +146,15 @@ export function createQueryBuilder(exec: DbExec, table: string): QueryBuilder {
     },
     async distinct(column: string): Promise<any[]> {
       const { sql: where, params } = buildWhereClause(filters);
-      let sql = `SELECT DISTINCT "${column}" FROM "${table}" ${where}`;
-      if (orderCol) sql += ` ORDER BY "${orderCol}" ${orderDir}`;
+      let sql = `SELECT DISTINCT ${quoteIdent(column)} FROM ${quoteIdent(table)} ${where}`;
+      if (orderCol) sql += ` ORDER BY ${quoteIdent(orderCol)} ${orderDir}`;
       if (limitN !== null) sql += ` LIMIT ${limitN}`;
+      if (limitN === null && offsetN !== null) sql += " LIMIT -1";
+      if (offsetN !== null) sql += ` OFFSET ${offsetN}`;
       const rows = await exec.all(sql, params);
-      return rows.map((r) => r[column]);
+      return rows.map(
+        (r) => deserializeRow(r, exec.schemas.get(table))[column],
+      );
     },
     async count(): Promise<number> {
       const { sql, params } = buildSql(true);
@@ -136,7 +164,7 @@ export function createQueryBuilder(exec: DbExec, table: string): QueryBuilder {
     async countDistinct(column: string): Promise<number> {
       const { sql: where, params } = buildWhereClause(filters);
       const rows = await exec.all(
-        `SELECT COUNT(DISTINCT "${column}") as v FROM "${table}" ${where}`,
+        `SELECT COUNT(DISTINCT ${quoteIdent(column)}) as v FROM ${quoteIdent(table)} ${where}`,
         params,
       );
       return Number((rows[0] as any)?.v ?? 0);
@@ -144,7 +172,7 @@ export function createQueryBuilder(exec: DbExec, table: string): QueryBuilder {
     async sum(column: string): Promise<number> {
       const { sql: where, params } = buildWhereClause(filters);
       const rows = await exec.all(
-        `SELECT SUM("${column}") as v FROM "${table}" ${where}`,
+        `SELECT SUM(${quoteIdent(column)}) as v FROM ${quoteIdent(table)} ${where}`,
         params,
       );
       return Number((rows[0] as any)?.v ?? 0);
@@ -152,7 +180,7 @@ export function createQueryBuilder(exec: DbExec, table: string): QueryBuilder {
     async avg(column: string): Promise<number> {
       const { sql: where, params } = buildWhereClause(filters);
       const rows = await exec.all(
-        `SELECT AVG("${column}") as v FROM "${table}" ${where}`,
+        `SELECT AVG(${quoteIdent(column)}) as v FROM ${quoteIdent(table)} ${where}`,
         params,
       );
       return Number((rows[0] as any)?.v ?? 0);
@@ -160,7 +188,7 @@ export function createQueryBuilder(exec: DbExec, table: string): QueryBuilder {
     async min(column: string): Promise<number> {
       const { sql: where, params } = buildWhereClause(filters);
       const rows = await exec.all(
-        `SELECT MIN("${column}") as v FROM "${table}" ${where}`,
+        `SELECT MIN(${quoteIdent(column)}) as v FROM ${quoteIdent(table)} ${where}`,
         params,
       );
       return Number((rows[0] as any)?.v ?? 0);
@@ -168,7 +196,7 @@ export function createQueryBuilder(exec: DbExec, table: string): QueryBuilder {
     async max(column: string): Promise<number> {
       const { sql: where, params } = buildWhereClause(filters);
       const rows = await exec.all(
-        `SELECT MAX("${column}") as v FROM "${table}" ${where}`,
+        `SELECT MAX(${quoteIdent(column)}) as v FROM ${quoteIdent(table)} ${where}`,
         params,
       );
       return Number((rows[0] as any)?.v ?? 0);
@@ -178,7 +206,11 @@ export function createQueryBuilder(exec: DbExec, table: string): QueryBuilder {
     },
     async delete(): Promise<number> {
       const { sql: where, params } = buildWhereClause(filters);
-      const result = await exec.run(`DELETE FROM "${table}" ${where}`, params);
+      const result = await exec.run(
+        `DELETE FROM ${quoteIdent(table)} ${where}`,
+        params,
+      );
+      exec.markChanged?.(table, result.changes);
       return result.changes;
     },
   };
@@ -189,13 +221,17 @@ function buildAggSelect(aggs: Record<string, AggDef>): string[] {
   const selects: string[] = [];
   for (const [alias, def] of Object.entries(aggs)) {
     if (def === "count") {
-      selects.push(`COUNT(*) as "${alias}"`);
+      selects.push(`COUNT(*) as ${quoteIdent(alias)}`);
     } else {
       const [fn, col] = def;
       if (fn === "countDistinct") {
-        selects.push(`COUNT(DISTINCT "${col}") as "${alias}"`);
+        selects.push(
+          `COUNT(DISTINCT ${quoteIdent(col)}) as ${quoteIdent(alias)}`,
+        );
       } else {
-        selects.push(`${fn.toUpperCase()}("${col}") as "${alias}"`);
+        selects.push(
+          `${fn.toUpperCase()}(${quoteIdent(col)}) as ${quoteIdent(alias)}`,
+        );
       }
     }
   }
@@ -217,20 +253,25 @@ function createGroupByBuilder(
 
   function execute(): Promise<Record<string, any>[]> {
     const { sql: where, params } = buildWhereClause(filters);
-    const groupCols = cols.map((c) => `"${c}"`).join(", ");
-    const selects = [...cols.map((c) => `"${c}"`), ...buildAggSelect(aggs)];
-    let sql = `SELECT ${selects.join(", ")} FROM "${table}" ${where} GROUP BY ${groupCols}`;
+    const groupCols = cols.map((c) => quoteIdent(c)).join(", ");
+    const selects = [
+      ...cols.map((c) => quoteIdent(c)),
+      ...buildAggSelect(aggs),
+    ];
+    let sql = `SELECT ${selects.join(", ")} FROM ${quoteIdent(table)} ${where} GROUP BY ${groupCols}`;
     if (havingFilters.length > 0) {
-      const parts: string[] = [];
-      for (const f of havingFilters) {
-        parts.push(`"${f.column}" ${f.operator} ?`);
-        params.push(f.value);
-      }
-      sql += ` HAVING ${parts.join(" AND ")}`;
+      const { sql: having, params: havingParams } =
+        buildWhereClause(havingFilters);
+      sql += ` HAVING ${having.slice("WHERE ".length)}`;
+      params.push(...havingParams);
     }
-    if (orderCol) sql += ` ORDER BY "${orderCol}" ${orderDir}`;
+    if (orderCol) sql += ` ORDER BY ${quoteIdent(orderCol)} ${orderDir}`;
     if (limitN !== null) sql += ` LIMIT ${limitN}`;
-    return exec.all(sql, params);
+    return exec
+      .all(sql, params)
+      .then((rows) =>
+        rows.map((row) => deserializeRow(row, exec.schemas.get(table))),
+      );
   }
 
   const builder: GroupByBuilder = {
@@ -264,9 +305,9 @@ function createGroupByBuilder(
 }
 
 export function buildInsertSql(table: string, keys: string[]): string {
-  const cols = keys.map((k) => `"${k}"`).join(", ");
+  const cols = keys.map((k) => quoteIdent(k)).join(", ");
   const placeholders = keys.map(() => "?").join(", ");
-  return `INSERT INTO "${table}" (${cols}) VALUES (${placeholders})`;
+  return `INSERT INTO ${quoteIdent(table)} (${cols}) VALUES (${placeholders})`;
 }
 
 export function buildUpdateSql(
@@ -274,11 +315,11 @@ export function buildUpdateSql(
   data: Record<string, any>,
 ): { sql: string; values: any[] } {
   const setClauses = Object.keys(data)
-    .map((k) => `"${k}" = ?`)
+    .map((k) => `${quoteIdent(k)} = ?`)
     .join(", ");
   const values = Object.values(data).map(serializeValue);
   return {
-    sql: `UPDATE "${table}" SET ${setClauses} WHERE _id = ?`,
+    sql: `UPDATE ${quoteIdent(table)} SET ${setClauses} WHERE _id = ?`,
     values,
   };
 }

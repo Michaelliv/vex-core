@@ -7,13 +7,333 @@ import {
   buildUpdateSql,
   createQueryBuilder,
   type DbExec,
+  quoteIdent,
   serializeValue,
   toSqlType,
 } from "./shared.js";
 
-function wrapSync(db: Database): DbExec {
+interface ExpectedIndex {
+  columns: string[];
+  unique: boolean;
+}
+
+interface ExistingColumn {
+  name: string;
+  type: string;
+  notnull: number;
+  dflt_value: string | null;
+}
+
+const SQLITE_INDEX_METADATA_TABLE = "__vex_sqlite_indexes";
+
+function getIndexColumns(db: Database, indexName: string): string[] {
+  const rows = db
+    .prepare(`PRAGMA index_info(${quoteIdent(indexName)})`)
+    .all() as {
+    seqno: number;
+    name: string;
+  }[];
+  return rows.sort((a, b) => a.seqno - b.seqno).map((row) => row.name);
+}
+
+function sameColumns(left: string[], right: string[]): boolean {
+  return (
+    left.length === right.length && left.every((col, i) => col === right[i])
+  );
+}
+
+function sqlLiteral(value: any): string {
+  const serialized = serializeValue(value);
+  if (serialized === null) return "NULL";
+  if (typeof serialized === "number") return String(serialized);
+  return `'${String(serialized).replaceAll("'", "''")}'`;
+}
+
+function defaultLiteral(colDef: TableSchema["columns"][string]): string | null {
+  return colDef.default !== undefined ? sqlLiteral(colDef.default) : null;
+}
+
+function defaultSql(colDef: TableSchema["columns"][string]): string {
+  const literal = defaultLiteral(colDef);
+  return literal !== null ? ` DEFAULT ${literal}` : "";
+}
+
+function columnNeedsRebuild(
+  col: ExistingColumn,
+  colDef: TableSchema["columns"][string],
+): boolean {
+  const expectedType = toSqlType(colDef.type, "sqlite").toUpperCase();
+  const actualType = (col.type || "TEXT").toUpperCase();
+  const expectedRequired = !colDef.optional;
+  const actualRequired = col.notnull === 1;
+  return (
+    actualType !== expectedType ||
+    actualRequired !== expectedRequired ||
+    col.dflt_value !== defaultLiteral(colDef)
+  );
+}
+
+function columnSql(
+  colName: string,
+  colDef: TableSchema["columns"][string],
+): string {
+  const sqlType = toSqlType(colDef.type, "sqlite");
+  const nullable = colDef.optional ? "" : " NOT NULL";
+  return `${quoteIdent(colName)} ${sqlType}${nullable}${defaultSql(colDef)}`;
+}
+
+function migratedColumnSql(
+  colName: string,
+  colDef: TableSchema["columns"][string],
+  enforceRequired: boolean,
+): string {
+  const sqlType = toSqlType(colDef.type, "sqlite");
+  const nullable = !colDef.optional && enforceRequired ? " NOT NULL" : "";
+  return `${quoteIdent(colName)} ${sqlType}${nullable}${defaultSql(colDef)}`;
+}
+
+function existingColumnSql(col: ExistingColumn): string {
+  const sqlType = col.type || "TEXT";
+  const nullable = col.notnull === 1 ? " NOT NULL" : "";
+  const defaultValue =
+    col.dflt_value !== null ? ` DEFAULT ${col.dflt_value}` : "";
+  return `${quoteIdent(col.name)} ${sqlType}${nullable}${defaultValue}`;
+}
+
+function validateTableName(name: string): void {
+  if (name.toLowerCase() === SQLITE_INDEX_METADATA_TABLE) {
+    throw new Error(
+      `reserved SQLite metadata table name: ${SQLITE_INDEX_METADATA_TABLE}`,
+    );
+  }
+  if (name.toLowerCase().startsWith("sqlite_")) {
+    throw new Error(`reserved SQLite internal table name: ${quoteIdent(name)}`);
+  }
+}
+
+function validateTableNameAvailability(db: Database, name: string): void {
+  const existing = db
+    .prepare(
+      "SELECT name FROM sqlite_master WHERE type = 'table' AND lower(name) = lower(?) AND name != ? LIMIT 1",
+    )
+    .get(name, name) as { name: string } | null;
+  if (existing) {
+    throw new Error(
+      `table name already exists with different casing: ${quoteIdent(existing.name)}`,
+    );
+  }
+}
+
+function validateColumns(name: string, schema: TableSchema): void {
+  const columnNames = new Set<string>();
+  for (const colName of Object.keys(schema.columns)) {
+    const normalizedColName = colName.toLowerCase();
+    if (normalizedColName === "_id") {
+      throw new Error(
+        `reserved column name ${quoteIdent(colName)} on table ${quoteIdent(name)}`,
+      );
+    }
+    if (columnNames.has(normalizedColName)) {
+      throw new Error(
+        `duplicate column name ${quoteIdent(colName)} on table ${quoteIdent(name)}`,
+      );
+    }
+    columnNames.add(normalizedColName);
+  }
+}
+
+function validateIndexColumns(name: string, schema: TableSchema): void {
+  const columnNames = new Set(["_id", ...Object.keys(schema.columns)]);
+  const generatedColumnIndexNames = new Map<string, string>();
+  for (const [colName, colDef] of Object.entries(schema.columns)) {
+    if (colDef.index) {
+      const idxName = `idx_${name}_${colName}`;
+      generatedColumnIndexNames.set(idxName.toLowerCase(), idxName);
+    }
+  }
+  const explicitIndexNames = new Set<string>();
+  for (const [idxName, idxCols] of schema.indexes ?? []) {
+    const normalizedIdxName = idxName.toLowerCase();
+    if (explicitIndexNames.has(normalizedIdxName)) {
+      throw new Error(
+        `duplicate explicit index name ${quoteIdent(idxName)} on table ${quoteIdent(name)}`,
+      );
+    }
+    explicitIndexNames.add(normalizedIdxName);
+    const generatedColumnIdxName =
+      generatedColumnIndexNames.get(normalizedIdxName);
+    if (generatedColumnIdxName && generatedColumnIdxName !== idxName) {
+      throw new Error(
+        `explicit index name collides with generated column index name ${quoteIdent(generatedColumnIdxName)} on table ${quoteIdent(name)}`,
+      );
+    }
+    if (idxName.toLowerCase().startsWith("sqlite_")) {
+      throw new Error(
+        `reserved SQLite internal index name ${quoteIdent(idxName)} on table ${quoteIdent(name)}`,
+      );
+    }
+    if (idxCols.length === 0) {
+      throw new Error(
+        `index must include at least one column: ${quoteIdent(idxName)} on table ${quoteIdent(name)}`,
+      );
+    }
+    for (const colName of idxCols) {
+      if (!columnNames.has(colName)) {
+        throw new Error(
+          `unknown index column ${quoteIdent(colName)} for index ${quoteIdent(idxName)} on table ${quoteIdent(name)}`,
+        );
+      }
+    }
+  }
+  const generatedUniqueNames = new Set<string>();
+  for (const uniqueCols of schema.unique ?? []) {
+    if (uniqueCols.length === 0) {
+      throw new Error(
+        `unique index must include at least one column on table ${quoteIdent(name)}`,
+      );
+    }
+    for (const colName of uniqueCols) {
+      if (!columnNames.has(colName)) {
+        throw new Error(
+          `unknown index column ${quoteIdent(colName)} for unique index on table ${quoteIdent(name)}`,
+        );
+      }
+    }
+    const idxName = `uq_${name}_${uniqueCols.join("_")}`;
+    const normalizedIdxName = idxName.toLowerCase();
+    if (generatedUniqueNames.has(normalizedIdxName)) {
+      throw new Error(
+        `duplicate generated unique index name ${quoteIdent(idxName)} on table ${quoteIdent(name)}`,
+      );
+    }
+    if (explicitIndexNames.has(normalizedIdxName)) {
+      throw new Error(
+        `explicit index name collides with generated unique index name ${quoteIdent(idxName)} on table ${quoteIdent(name)}`,
+      );
+    }
+    generatedUniqueNames.add(normalizedIdxName);
+  }
+}
+
+function expectedIndexDefinitions(
+  name: string,
+  schema: TableSchema,
+): Map<string, ExpectedIndex> {
+  const expectedIndexes = new Map<string, ExpectedIndex>();
+  for (const [colName, colDef] of Object.entries(schema.columns)) {
+    if (colDef.index) {
+      expectedIndexes.set(`idx_${name}_${colName}`, {
+        columns: [colName],
+        unique: false,
+      });
+    }
+  }
+  for (const [idxName, idxCols] of schema.indexes ?? []) {
+    expectedIndexes.set(idxName, { columns: idxCols, unique: false });
+  }
+  for (const uniqueCols of schema.unique ?? []) {
+    expectedIndexes.set(`uq_${name}_${uniqueCols.join("_")}`, {
+      columns: uniqueCols,
+      unique: true,
+    });
+  }
+  return expectedIndexes;
+}
+
+function validateIndexNameAvailability(
+  db: Database,
+  name: string,
+  expectedIndexes: Map<string, ExpectedIndex>,
+): void {
+  for (const idxName of expectedIndexes.keys()) {
+    const existing = db
+      .prepare(
+        "SELECT name, tbl_name FROM sqlite_master WHERE type = 'index' AND lower(name) = lower(?)",
+      )
+      .get(idxName) as { name: string; tbl_name: string } | null;
+    if (existing && existing.tbl_name !== name) {
+      throw new Error(
+        `index name already exists on another table: ${quoteIdent(existing.name)} on ${quoteIdent(existing.tbl_name)}`,
+      );
+    }
+  }
+}
+
+function createTableSql(
+  name: string,
+  schema: TableSchema,
+  extraColumns: ExistingColumn[] = [],
+): string {
+  const colDefs = ["_id TEXT PRIMARY KEY"];
+  for (const [colName, colDef] of Object.entries(schema.columns)) {
+    colDefs.push(columnSql(colName, colDef));
+  }
+  for (const col of extraColumns) {
+    if (col.name !== "_id" && !(col.name in schema.columns)) {
+      colDefs.push(existingColumnSql(col));
+    }
+  }
+  return `CREATE TABLE ${quoteIdent(name)} (${colDefs.join(", ")})`;
+}
+
+function sqliteObjectExists(db: Database, name: string): boolean {
+  const row = db
+    .prepare("SELECT 1 FROM sqlite_master WHERE lower(name) = lower(?) LIMIT 1")
+    .get(name) as { 1: number } | null;
+  return row !== null;
+}
+
+function rebuildTempTableName(db: Database, name: string): string {
+  const base = `__vex_rebuild_${name}_${Date.now()}`;
+  let candidate = base;
+  let counter = 0;
+  while (sqliteObjectExists(db, candidate)) {
+    counter++;
+    candidate = `${base}_${counter}`;
+  }
+  return candidate;
+}
+
+function rebuildTable(
+  db: Database,
+  name: string,
+  schema: TableSchema,
+  existingColumns: ExistingColumn[],
+  copyData: boolean,
+): void {
+  const recordedIndexes = db
+    .prepare('SELECT "name" FROM "__vex_sqlite_indexes" WHERE "table" = ?')
+    .all(name) as { name: string }[];
+  const recordedIndexNames = new Set(recordedIndexes.map((idx) => idx.name));
+  const manualIndexes = db
+    .prepare(
+      "SELECT name, sql FROM sqlite_master WHERE type = 'index' AND tbl_name = ? AND sql IS NOT NULL",
+    )
+    .all(name) as { name: string; sql: string }[];
+  const manualIndexSql = manualIndexes
+    .filter((idx) => !recordedIndexNames.has(idx.name))
+    .map((idx) => idx.sql);
+
+  const tmpName = rebuildTempTableName(db, name);
+  db.exec(createTableSql(tmpName, schema, existingColumns));
+  if (copyData) {
+    const copyColumns = existingColumns.map((col) => quoteIdent(col.name));
+    db.exec(
+      `INSERT INTO ${quoteIdent(tmpName)} (${copyColumns.join(", ")}) SELECT ${copyColumns.join(", ")} FROM ${quoteIdent(name)}`,
+    );
+  }
+  db.exec(`DROP TABLE ${quoteIdent(name)}`);
+  db.exec(`ALTER TABLE ${quoteIdent(tmpName)} RENAME TO ${quoteIdent(name)}`);
+  db.prepare('DELETE FROM "__vex_sqlite_indexes" WHERE "table" = ?').run(name);
+  for (const sql of manualIndexSql) db.exec(sql);
+}
+
+function wrapSync(db: Database, changedTables: Set<string>): DbExec {
   return {
     schemas: new Map(),
+    markChanged(table, changes) {
+      if (changes > 0) changedTables.add(table);
+    },
     async all(sql, params) {
       return params.length > 0
         ? db.prepare(sql).all(...params)
@@ -41,57 +361,166 @@ export function sqliteAdapter(
   db.exec(`PRAGMA busy_timeout = ${opts?.busyTimeout ?? 5000}`);
   if (opts?.cacheSize) db.exec(`PRAGMA cache_size = ${opts.cacheSize}`);
 
-  const exec = wrapSync(db);
   const changedTables = new Set<string>();
+  const exec = wrapSync(db, changedTables);
   let txDepth = 0;
+  let closed = false;
 
   return {
     name: "sqlite",
 
     ensureTable(name: string, schema: TableSchema) {
-      exec.schemas.set(name, schema);
-      const colDefs = ["_id TEXT PRIMARY KEY"];
-      for (const [colName, colDef] of Object.entries(schema.columns)) {
-        const sqlType = toSqlType(colDef.type, "sqlite");
-        const nullable = colDef.optional ? "" : " NOT NULL";
-        const defaultVal =
-          colDef.default !== undefined
-            ? ` DEFAULT ${JSON.stringify(colDef.default)}`
-            : "";
-        colDefs.push(`"${colName}" ${sqlType}${nullable}${defaultVal}`);
-      }
-      db.exec(`CREATE TABLE IF NOT EXISTS "${name}" (${colDefs.join(", ")})`);
+      validateTableName(name);
+      validateTableNameAvailability(db, name);
+      validateColumns(name, schema);
+      validateIndexColumns(name, schema);
+      const expectedIndexes = expectedIndexDefinitions(name, schema);
+      validateIndexNameAvailability(db, name, expectedIndexes);
+      db.exec("SAVEPOINT __vex_ensure_table");
+      try {
+        db.exec(
+          createTableSql(name, schema).replace(
+            "CREATE TABLE",
+            "CREATE TABLE IF NOT EXISTS",
+          ),
+        );
+        db.exec(
+          'CREATE TABLE IF NOT EXISTS "__vex_sqlite_indexes" ("table" TEXT NOT NULL, "name" TEXT NOT NULL, PRIMARY KEY ("table", "name"))',
+        );
 
-      // Migrate: add missing columns
-      const existing = db.prepare(`PRAGMA table_info("${name}")`).all() as {
-        name: string;
-      }[];
-      const existingNames = new Set(existing.map((c) => c.name));
-      for (const [colName, colDef] of Object.entries(schema.columns)) {
-        if (!existingNames.has(colName)) {
+        // Migrate: add missing columns
+        let existing = db
+          .prepare(`PRAGMA table_info(${quoteIdent(name)})`)
+          .all() as ExistingColumn[];
+        let existingNames = new Set(existing.map((c) => c.name));
+        const tableIsEmpty =
+          (
+            db
+              .prepare(`SELECT COUNT(*) as count FROM ${quoteIdent(name)}`)
+              .get() as { count: number }
+          ).count === 0;
+        for (const [colName, colDef] of Object.entries(schema.columns)) {
+          if (!existingNames.has(colName)) {
+            if (
+              !tableIsEmpty &&
+              !colDef.optional &&
+              colDef.default === undefined
+            ) {
+              throw new Error(
+                `cannot add required column without default to non-empty table: ${quoteIdent(colName)} on table ${quoteIdent(name)}`,
+              );
+            }
+            db.exec(
+              `ALTER TABLE ${quoteIdent(name)} ADD COLUMN ${migratedColumnSql(
+                colName,
+                colDef,
+                tableIsEmpty || colDef.default !== undefined,
+              )}`,
+            );
+          }
+        }
+
+        const requiresEmptyTableRebuild =
+          tableIsEmpty &&
+          existing.some((col) => {
+            const colDef = schema.columns[col.name];
+            return colDef && columnNeedsRebuild(col, colDef);
+          });
+        const requiresNonEmptyTableRebuild =
+          !tableIsEmpty &&
+          existing.some((col) => {
+            const colDef = schema.columns[col.name];
+            return colDef && columnNeedsRebuild(col, colDef);
+          });
+        if (requiresEmptyTableRebuild || requiresNonEmptyTableRebuild) {
+          rebuildTable(
+            db,
+            name,
+            schema,
+            existing,
+            requiresNonEmptyTableRebuild,
+          );
+          existing = db
+            .prepare(`PRAGMA table_info(${quoteIdent(name)})`)
+            .all() as ExistingColumn[];
+          existingNames = new Set(existing.map((c) => c.name));
+        }
+
+        const existingIndexes = db
+          .prepare(
+            "SELECT name FROM sqlite_master WHERE type = 'index' AND tbl_name = ? AND sql IS NOT NULL",
+          )
+          .all(name) as { name: string }[];
+        const indexList = db
+          .prepare(`PRAGMA index_list(${quoteIdent(name)})`)
+          .all() as {
+          name: string;
+          unique: number;
+        }[];
+        const uniqueByIndexName = new Map(
+          indexList.map((idx) => [idx.name.toLowerCase(), idx.unique === 1]),
+        );
+        const expectedIndexesByName = new Map(
+          [...expectedIndexes].map(([idxName, expected]) => [
+            idxName.toLowerCase(),
+            expected,
+          ]),
+        );
+        const recordedIndexes = db
+          .prepare('SELECT name FROM "__vex_sqlite_indexes" WHERE "table" = ?')
+          .all(name) as { name: string }[];
+        const recordedIndexNames = new Set(
+          recordedIndexes.map((idx) => idx.name),
+        );
+        for (const { name: idxName } of existingIndexes) {
+          const indexColumns = getIndexColumns(db, idxName);
+          const idxPrefix = `idx_${name}_`;
+          const uqPrefix = `uq_${name}_`;
+          const generatedColumnIndex =
+            idxName.startsWith(idxPrefix) &&
+            existingNames.has(idxName.slice(idxPrefix.length)) &&
+            sameColumns(indexColumns, [idxName.slice(idxPrefix.length)]);
+          const generatedUniqueIndex =
+            idxName.startsWith(uqPrefix) &&
+            idxName.slice(uqPrefix.length) === indexColumns.join("_");
+          const managedByVex =
+            generatedColumnIndex ||
+            generatedUniqueIndex ||
+            recordedIndexNames.has(idxName);
+          const expected = expectedIndexesByName.get(idxName.toLowerCase());
+          const matchesExpected =
+            expected &&
+            uniqueByIndexName.get(idxName.toLowerCase()) === expected.unique &&
+            sameColumns(indexColumns, expected.columns);
+          if (managedByVex && !matchesExpected) {
+            db.exec(`DROP INDEX ${quoteIdent(idxName)}`);
+            db.prepare(
+              'DELETE FROM "__vex_sqlite_indexes" WHERE "table" = ? AND "name" = ?',
+            ).run(name, idxName);
+          } else if (expected && !matchesExpected) {
+            throw new Error(
+              `index name already exists with different definition: ${quoteIdent(idxName)} on table ${quoteIdent(name)}`,
+            );
+          }
+        }
+
+        for (const [idxName, expected] of expectedIndexes) {
+          const unique = expected.unique ? "UNIQUE " : "";
           db.exec(
-            `ALTER TABLE "${name}" ADD COLUMN "${colName}" ${toSqlType(colDef.type, "sqlite")}`,
+            `CREATE ${unique}INDEX IF NOT EXISTS ${quoteIdent(idxName)} ON ${quoteIdent(name)} (${expected.columns.map((c) => quoteIdent(c)).join(", ")})`,
           );
         }
-      }
-
-      for (const [colName, colDef] of Object.entries(schema.columns)) {
-        if (colDef.index) {
-          db.exec(
-            `CREATE INDEX IF NOT EXISTS "idx_${name}_${colName}" ON "${name}" ("${colName}")`,
-          );
+        for (const idxName of expectedIndexes.keys()) {
+          db.prepare(
+            'INSERT OR IGNORE INTO "__vex_sqlite_indexes" ("table", "name") VALUES (?, ?)',
+          ).run(name, idxName);
         }
-      }
-      for (const [idxName, idxCols] of schema.indexes ?? []) {
-        db.exec(
-          `CREATE INDEX IF NOT EXISTS "${idxName}" ON "${name}" (${idxCols.map((c) => `"${c}"`).join(", ")})`,
-        );
-      }
-      for (const uniqueCols of schema.unique ?? []) {
-        const idxName = `uq_${name}_${uniqueCols.join("_")}`;
-        db.exec(
-          `CREATE UNIQUE INDEX IF NOT EXISTS "${idxName}" ON "${name}" (${uniqueCols.map((c) => `"${c}"`).join(", ")})`,
-        );
+        db.exec("RELEASE SAVEPOINT __vex_ensure_table");
+        exec.schemas.set(name, schema);
+      } catch (error) {
+        db.exec("ROLLBACK TO SAVEPOINT __vex_ensure_table");
+        db.exec("RELEASE SAVEPOINT __vex_ensure_table");
+        throw error;
       }
     },
 
@@ -115,12 +544,13 @@ export function sqliteAdapter(
       const row = await qb.first<{ _id: string }>();
 
       if (row) {
+        if (Object.keys(data).length === 0) return;
         const { sql, values } = buildUpdateSql(table, data);
-        db.prepare(sql).run(...values, row._id);
+        const result = db.prepare(sql).run(...values, row._id);
+        if (result.changes > 0) changedTables.add(table);
       } else {
         await this.insert(table, { ...keys, ...data });
       }
-      changedTables.add(table);
     },
 
     async update(
@@ -128,14 +558,17 @@ export function sqliteAdapter(
       id: string,
       data: Record<string, any>,
     ): Promise<void> {
+      if (Object.keys(data).length === 0) return;
       const { sql, values } = buildUpdateSql(table, data);
-      db.prepare(sql).run(...values, id);
-      changedTables.add(table);
+      const result = db.prepare(sql).run(...values, id);
+      if (result.changes > 0) changedTables.add(table);
     },
 
     async delete(table: string, id: string): Promise<boolean> {
-      const result = db.prepare(`DELETE FROM "${table}" WHERE _id = ?`).run(id);
-      changedTables.add(table);
+      const result = db
+        .prepare(`DELETE FROM ${quoteIdent(table)} WHERE _id = ?`)
+        .run(id);
+      if (result.changes > 0) changedTables.add(table);
       return result.changes > 0;
     },
 
@@ -153,6 +586,8 @@ export function sqliteAdapter(
         }
       }
       txDepth++;
+      const changedBefore = new Set(changedTables);
+      const schemasBefore = new Map(exec.schemas);
       db.exec("BEGIN");
       try {
         const result = await fn();
@@ -160,6 +595,12 @@ export function sqliteAdapter(
         return result;
       } catch (e) {
         db.exec("ROLLBACK");
+        changedTables.clear();
+        for (const table of changedBefore) changedTables.add(table);
+        exec.schemas.clear();
+        for (const [table, schema] of schemasBefore) {
+          exec.schemas.set(table, schema);
+        }
         throw e;
       } finally {
         txDepth--;
@@ -186,8 +627,14 @@ export function sqliteAdapter(
       rows: Record<string, any>[],
     ): Promise<void> {
       if (rows.length === 0) return;
-      const firstRow = { _id: generateId(12), ...rows[0] };
-      const keys = Object.keys(firstRow);
+      const keys = [
+        "_id",
+        ...new Set(
+          rows
+            .flatMap((row) => Object.keys(row))
+            .filter((key) => key !== "_id"),
+        ),
+      ];
       const stmt = db.prepare(buildInsertSql(table, keys));
 
       const insertMany = db.transaction((items: Record<string, any>[]) => {
@@ -215,6 +662,8 @@ export function sqliteAdapter(
     },
 
     close() {
+      if (closed) return;
+      closed = true;
       db.close();
     },
   };

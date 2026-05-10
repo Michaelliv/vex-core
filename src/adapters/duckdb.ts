@@ -38,6 +38,7 @@ import {
   buildUpdateSql,
   createQueryBuilder,
   type DbExec,
+  quoteIdent,
   serializeValue,
   toSqlType,
 } from "./shared.js";
@@ -85,9 +86,12 @@ function toBindValue(v: unknown): DuckDBValue {
  * adapter's wrapSync; `run()` synthesizes a `{ changes }` result
  * because the new binding doesn't surface one natively.
  */
-function wrapAsync(conn: DuckDBConnection): DbExec {
+function wrapAsync(conn: DuckDBConnection, changedTables: Set<string>): DbExec {
   return {
     schemas: new Map(),
+    markChanged(table, changes) {
+      if (changes > 0) changedTables.add(table);
+    },
     async all(sql, params) {
       const reader =
         params.length > 0
@@ -137,8 +141,8 @@ export async function duckdbAdapter(
 ): Promise<DuckDBAdapter> {
   const instance = await DuckDBInstance.create(path);
   const conn = await instance.connect();
-  const exec = wrapAsync(conn);
   const changedTables = new Set<string>();
+  const exec = wrapAsync(conn, changedTables);
   let txDepth = 0;
   let closed = false;
 
@@ -177,12 +181,13 @@ export async function duckdbAdapter(
       const existing = await qb.first<{ _id: string }>();
 
       if (existing) {
+        if (Object.keys(data).length === 0) return;
         const { sql, values } = buildUpdateSql(table, data);
         await conn.run(sql, [...values, existing._id].map(toBindValue));
+        changedTables.add(table);
       } else {
         await adapter.insert(table, { ...keys, ...data });
       }
-      changedTables.add(table);
     },
 
     async update(
@@ -190,18 +195,23 @@ export async function duckdbAdapter(
       id: string,
       data: Record<string, any>,
     ): Promise<void> {
+      if (Object.keys(data).length === 0) return;
       const { sql, values } = buildUpdateSql(table, data);
-      await conn.run(sql, [...values, id].map(toBindValue));
-      changedTables.add(table);
+      const reader = await conn.runAndReadAll(
+        `${sql} RETURNING _id`,
+        [...values, id].map(toBindValue),
+      );
+      if (reader.getRowObjectsJS().length > 0) changedTables.add(table);
     },
 
     async delete(table: string, id: string): Promise<boolean> {
       const reader = await conn.runAndReadAll(
-        `DELETE FROM "${table}" WHERE _id = ? RETURNING _id`,
+        `DELETE FROM ${quoteIdent(table)} WHERE _id = ? RETURNING _id`,
         [id as DuckDBValue],
       );
-      changedTables.add(table);
-      return reader.getRowObjectsJS().length > 0;
+      const deleted = reader.getRowObjectsJS().length > 0;
+      if (deleted) changedTables.add(table);
+      return deleted;
     },
 
     query(table: string) {

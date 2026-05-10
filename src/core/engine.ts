@@ -29,7 +29,8 @@ const TRACE_TYPES = new Set(["agent", "channel", "cron", "webhook"]);
 // Keys whose values are scrubbed before being stored in span meta.args.
 // Tracing routinely captures handler arguments; without this, bearer
 // tokens, secrets and credentials end up in plaintext inside _spans rows.
-const SENSITIVE_ARG_KEYS = /^(token|password|passwd|secret|credential|apikey|api_key|authorization|auth)$/i;
+const SENSITIVE_ARG_KEYS =
+  /^(token|password|passwd|secret|credential|apikey|api_key|authorization|auth)$/i;
 
 function redactArgs(args: any): any {
   if (!args || typeof args !== "object") return args;
