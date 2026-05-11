@@ -65,6 +65,7 @@ function makeSpan(
 ): SpanHandle {
   const spanId = id(8);
   const start = performance.now();
+  const startTime = Date.now();
   let ended = false;
   return {
     spanId,
@@ -78,8 +79,8 @@ function makeSpan(
         app,
         type,
         name,
-        startTime: Date.now(),
-        duration: Math.round((performance.now() - start) * 1000),
+        startTime,
+        duration: Math.round(performance.now() - start),
         status,
         error: opts?.error ?? null,
         meta: opts?.meta ? JSON.stringify(opts.meta) : null,
