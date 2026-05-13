@@ -25,23 +25,12 @@ type SubscriptionCallback = (data: any) => void;
 
 const TRACE_TYPES = new Set(["agent", "channel", "cron", "webhook"]);
 
-// Keys whose values are scrubbed before being stored in span meta.args.
-// Tracing routinely captures handler arguments; without this, bearer
-// tokens, secrets and credentials end up in plaintext inside _spans rows.
-const SENSITIVE_ARG_KEYS =
-  /^(token|password|passwd|secret|credential|apikey|api_key|authorization|auth)$/i;
-
-function redactArgs(args: any): any {
-  if (!args || typeof args !== "object") return args;
-  if (Array.isArray(args)) return args.map(redactArgs);
-  const out: Record<string, any> = {};
-  for (const [k, v] of Object.entries(args)) {
-    if (SENSITIVE_ARG_KEYS.test(k)) out[k] = "\u2022\u2022\u2022";
-    else if (v && typeof v === "object") out[k] = redactArgs(v);
-    else out[k] = v;
-  }
-  return out;
-}
+// Trace metadata is operational telemetry, not a request archive.
+// The engine records stable execution facts (plugin, touched tables,
+// row counts, status, duration) and leaves domain-specific payload
+// summaries to explicit call-site metadata. Handler args/results can
+// contain arbitrarily large files, imports, prompts, messages, or
+// credentials, so they are never captured here by default.
 
 interface Subscription {
   id: string;
@@ -786,7 +775,6 @@ export class Vex {
   ): Promise<T> {
     const { parent, user } = normalizeCallContext(callCtx);
     return this.trace("query", name, parent, async (ectx, meta) => {
-      meta.args = redactArgs(args);
       const reg = this.queries.get(name);
       if (!reg) throw new Error(`Query not found: ${name}`);
       meta.plugin = reg.plugin;
@@ -813,7 +801,6 @@ export class Vex {
   ): Promise<T> {
     const { parent, user } = normalizeCallContext(callCtx);
     return this.trace("mutation", name, parent, async (ectx, meta) => {
-      meta.args = redactArgs(args);
       const reg = this.mutations.get(name);
       if (!reg) throw new Error(`Mutation not found: ${name}`);
       meta.plugin = reg.plugin;
@@ -842,7 +829,6 @@ export class Vex {
     return this.trace("subscribe", name, null, async (_ectx, meta) => {
       const reg = this.queries.get(name);
       if (!reg) throw new Error(`Query not found: ${name}`);
-      meta.args = redactArgs(args);
       const tables = new Set<string>();
       const ctx = this.buildQueryContext(tables, user);
       const result = await reg.def.handler(ctx, args);
@@ -882,7 +868,6 @@ export class Vex {
       async (ectx, meta) => {
         meta.method = req.method;
         meta.path = req.path;
-        meta.args = redactArgs(req.body);
         if (match.def.verify && !match.def.verify(req)) {
           meta.status = 401;
           return {

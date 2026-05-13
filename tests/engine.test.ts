@@ -725,6 +725,59 @@ describe("_system.sql", () => {
   });
 });
 
+describe("trace metadata", () => {
+  test("does not auto-capture query, mutation, subscription, or webhook args", async () => {
+    const spans: any[] = [];
+    const tvex = await Vex.create({
+      storage: sqliteAdapter(":memory:"),
+      tracer: { onSpan: (span) => spans.push(span) },
+      plugins: [
+        (api: VexPluginAPI) => {
+          api.setName("echo");
+          api.registerTable("items", { columns: { text: { type: "string" } } });
+          api.registerQuery("get", {
+            args: { text: "string", token: "string" },
+            handler: async (_ctx, args) => args.text.length,
+          });
+          api.registerMutation("big", {
+            args: { text: "string", token: "string" },
+            handler: async (_ctx, args) => args.text.length,
+          });
+          api.registerWebhook("hook", {
+            path: "/hook",
+            handler: async (_ctx, req) => ({ length: req.body.text.length }),
+          });
+        },
+      ],
+    });
+
+    const args = { text: "x".repeat(10_000), token: "secret-token" };
+    await tvex.query("echo.get", args);
+    await tvex.mutate("echo.big", args);
+    const unsub = await tvex.subscribe("echo.get", args, () => {});
+    unsub();
+    await tvex.handleWebhook({
+      body: args,
+      rawBody: JSON.stringify(args),
+      headers: {},
+      method: "POST",
+      path: "/hook",
+      query: {},
+    });
+
+    for (const span of spans.filter((s) =>
+      ["query", "mutation", "subscribe", "webhook"].includes(s.type),
+    )) {
+      const meta = span.meta ? JSON.parse(span.meta) : {};
+      expect(meta.args).toBeUndefined();
+      expect(JSON.stringify(meta)).not.toContain("secret-token");
+      expect(JSON.stringify(meta)).not.toContain("x".repeat(100));
+    }
+
+    await tvex.close();
+  });
+});
+
 describe("handler timeout", () => {
   test("query times out when handler exceeds limit", async () => {
     const tvex = await Vex.create({
